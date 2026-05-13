@@ -93,36 +93,43 @@ class LLMRouter:
                 last_error = LLMUnavailableError(f"Unknown provider {provider_name!r}")
                 continue
 
+            # Estimate uses a 1000-token proxy for input (actual unknown pre-call);
+            # max_tokens is the output cap. Conservative but avoids 2x inflation.
             estimate = provider.cost_estimate(
-                tokens_in=sampling.max_tokens, tokens_out=sampling.max_tokens
+                tokens_in=1000, tokens_out=sampling.max_tokens
             )
-            if not tier.bypass_budget and estimate > 0 and not self.budget.check(estimate):
-                self.log_repo.record(
-                    trace_id=trace_id,
-                    tier=task,
-                    provider=provider_name,
-                    model=provider.model,
-                    status="budget_blocked",
-                    error_code="BUDGET_EXCEEDED",
-                    cache_key=cache_key,
-                )
-                raise BudgetExceededError(
-                    f"Hourly LLM budget exhausted (spent ${self.budget.current_spend():.4f} "
-                    f"of ${self.budget.hourly_usd:.2f}); blocked tier={task} provider={provider_name}"
-                )
+            reserved = False
+            if not tier.bypass_budget and estimate > 0:
+                reserved = await self.budget.check_and_reserve(estimate)
+                if not reserved:
+                    self.log_repo.record(
+                        trace_id=trace_id,
+                        tier=task,
+                        provider=provider_name,
+                        model=provider.model,
+                        status="budget_blocked",
+                        error_code="BUDGET_EXCEEDED",
+                        cache_key=cache_key,
+                    )
+                    raise BudgetExceededError(
+                        f"Hourly LLM budget exhausted (spent ${self.budget.current_spend():.4f} "
+                        f"of ${self.budget.hourly_usd:.2f}); blocked tier={task} provider={provider_name}"
+                    )
 
             attempts = 2 if (schema is not None and tier.schema_retry) else 1
+            current_messages = list(messages)
             for attempt in range(attempts):
                 t0 = time.monotonic()
                 try:
                     response = await provider.generate(
-                        messages, schema=schema, sampling=sampling
+                        current_messages, schema=schema, sampling=sampling
                     )
                     response.cached_hit = False
                     latency_ms = int((time.monotonic() - t0) * 1000)
                     response.latency_ms = response.latency_ms or latency_ms
-                    if estimate > 0:
-                        await self.budget.add(response.cost_usd or estimate)
+                    actual_cost = response.cost_usd or estimate
+                    if reserved:
+                        await self.budget.replace_reservation(estimate, actual_cost)
                     if cache and self.cache.enabled:
                         await self.cache.put(cache_key, response)
                     self.log_repo.record(
@@ -148,6 +155,10 @@ class LLMRouter:
                             task=task,
                             error=str(e),
                         )
+                        # Append stricter instruction so the retry has a real chance.
+                        current_messages = list(messages) + [
+                            {"role": "user", "content": "Return only valid JSON matching the schema exactly. No explanation, no markdown, no extra text."}
+                        ]
                         continue
                     self.log_repo.record(
                         trace_id=trace_id,
@@ -169,6 +180,28 @@ class LLMRouter:
                         model=provider.model,
                         status="error",
                         error_code=type(e).__name__,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                        cache_key=cache_key,
+                    )
+                    break  # fail over to next provider
+                except Exception as e:
+                    # Unexpected provider error (e.g., SDK bug, network wrapper failure).
+                    # Treat as ProviderUnavailable so failover proceeds normally.
+                    last_error = ProviderUnavailable(f"{type(e).__name__}: {e}")
+                    log.warning(
+                        "llm.provider_unexpected_error",
+                        provider=provider_name,
+                        task=task,
+                        error=str(e),
+                        exc_info=True,
+                    )
+                    self.log_repo.record(
+                        trace_id=trace_id,
+                        tier=task,
+                        provider=provider_name,
+                        model=provider.model,
+                        status="error",
+                        error_code="UNEXPECTED_ERROR",
                         latency_ms=int((time.monotonic() - t0) * 1000),
                         cache_key=cache_key,
                     )
