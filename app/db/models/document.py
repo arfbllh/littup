@@ -32,6 +32,24 @@ class Document(Base):
 
     pages: Mapped[list["Page"]] = relationship("Page", back_populates="document", cascade="all, delete-orphan")
     blocks: Mapped[list["Block"]] = relationship("Block", back_populates="document", cascade="all, delete-orphan")
+    events: Mapped[list["DocumentEvent"]] = relationship(
+        "DocumentEvent", back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class DocumentEvent(Base):
+    __tablename__ = "document_events"
+    __table_args__ = {"schema": "app"}
+
+    document_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("app.documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    seq: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    ts: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+
+    document: Mapped["Document"] = relationship("Document", back_populates="events")
 
 
 class Page(Base):

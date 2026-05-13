@@ -34,13 +34,23 @@ class Reconciler:
         return count
 
     async def find_partial_documents(self) -> int:
-        """Re-enqueue the missing pipeline stage for stuck documents (NN-1)."""
+        """Re-enqueue the missing pipeline stage for stuck documents (NN-1).
+
+        Skips documents that already have a pending or running job so that
+        reclaim_stuck_jobs (which resets stuck jobs back to pending) and this
+        sweep don't both enqueue for the same document simultaneously.
+        """
         result = await self._session.execute(
             text("""
-                SELECT id, status
-                FROM app.documents
-                WHERE status NOT IN ('ready', 'failed')
-                  AND updated_at < NOW() - INTERVAL '10 minutes'
+                SELECT d.id, d.status
+                FROM app.documents d
+                WHERE d.status NOT IN ('ready', 'failed')
+                  AND d.updated_at < NOW() - INTERVAL '10 minutes'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs.jobs j
+                      WHERE j.payload->>'document_id' = d.id::text
+                        AND j.status IN ('pending', 'running')
+                  )
             """)
         )
         rows = result.fetchall()

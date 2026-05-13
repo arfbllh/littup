@@ -1,9 +1,18 @@
 class AppError(Exception):
-    def __init__(self, message: str, *, code: str = "APP_ERROR", status_code: int = 400):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "APP_ERROR",
+        status_code: int = 400,
+        retryable: bool = True,
+    ):
         super().__init__(message)
         self.message = message
         self.code = code
         self.status_code = status_code
+        # Used by the job worker to decide whether to re-enqueue on handler failure.
+        self.retryable = retryable
 
 
 class NotFoundError(AppError):
