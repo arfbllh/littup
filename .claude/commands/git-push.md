@@ -55,33 +55,51 @@ Construct the full branch name as `<prefix>/<slug>` and proceed to Step 4.
 
 ---
 
-## Step 4 — Create branch, add, commit, push
+## Step 4 — Inspect changes and create branch
 
-Run in sequence:
+Run all three in parallel:
+```bash
+git status
+```
+```bash
+git diff
+```
+```bash
+git log --oneline -5
+```
 
+Then create the branch:
 ```bash
 git checkout -b <branch-name>
 ```
 
-```bash
-git add -A
-```
+---
 
-Show the user the staged diff summary:
+## Step 5 — Stage specific files and commit
+
+Stage only the files shown in `git status` — add them by name, never use `git add -A` or `git add .`. Do not stage files that look like secrets (`.env`, credentials, key files).
+
+Show the staged diff summary:
 ```bash
 git diff --cached --stat
 ```
 
-Ask the user:
-> "Commit message? (press Enter to auto-generate)"
-
-If they provide a message, use it verbatim. If they skip or press Enter, write a concise one-line conventional commit message that summarises the staged changes (e.g. `feat: add rule extractor endpoint`).
+Draft a concise one-line conventional commit message that summarises the staged changes (e.g. `feat: add rule extractor endpoint`). Then commit using a HEREDOC:
 
 ```bash
-git commit -m "<message>
+git commit -m "$(cat <<'EOF'
+<message>
 
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+EOF
+)"
 ```
+
+Run `git status` after the commit to verify it succeeded. If a pre-commit hook fails, fix the underlying issue and create a **new** commit — never use `--amend` or `--no-verify`.
+
+---
+
+## Step 6 — Push
 
 ```bash
 git push -u origin <branch-name>
@@ -89,7 +107,7 @@ git push -u origin <branch-name>
 
 ---
 
-## Step 5 — Done message
+## Step 7 — Done message
 
 Print exactly this (fill in the branch name):
 
