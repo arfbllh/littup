@@ -1,6 +1,6 @@
 # Milestone Roadmap
 
-This is the build plan. Each milestone is a separate spec doc in this folder (`M0-bootstrap.md` … `M13-submission.md`) that you feed to Claude Code as the unit of work.
+This is the build plan. Each milestone is a separate spec doc in this folder that you feed to Claude Code as the unit of work.
 
 ## How to use a milestone with Claude Code
 
@@ -53,37 +53,24 @@ flowchart LR
     M12 --> M13[M13: Submission]
 ```
 
-## Schedule (Wed May 13 → Fri May 15)
-
-| Day | Hrs | Milestones | Rubric points it unlocks |
-|---|---|---|---|
-| **Wed eve** | 5–6h | M0, M1, M2 | Foundation; no rubric points yet but unblocks everything |
-| **Thu** | 9–10h | M3, M4, M5, M6 | Document Processing (25 pts) + Retrieval recall side of (25 pts) |
-| **Fri AM** | 5h | M7, M8, M9 | Draft Quality (10 pts) + Grounding side of (25 pts) + start of Edits (25 pts) |
-| **Fri PM** | 5h | M10, M11, M12, M13 | Improvement from Edits (25 pts) + Documentation (5 pts) + Code Quality (10 pts) |
-
-Hours are work-on-the-system; Claude Code is doing most of the typing, so much of this is reading PLAN.md, pushing back, and verifying tests. The biggest risk is M4 (OCR) and M11 (UI) — both have failure modes that eat hours. Mitigations in their individual specs.
-
 ## Milestone list at a glance
 
-| # | Milestone | Est. | NN-N rules wired | Rubric category |
-|---|---|---|---|---|
-| **M0** | Bootstrap: repo, deps, FastAPI hello, Docker, logging, errors | 1h | NN-12 | Code Quality |
-| **M1** | Database + job queue + migrations + pgbouncer | 2h | NN-1, NN-3, NN-4, NN-8 | Code Quality |
-| **M2** | LLM Router + providers + cache + budget | 2h | NN-6, NN-7, NN-12 | Code Quality |
-| **M3** | Ingestion API + idempotency + reconciler + SSE | 1.5h | NN-1, NN-2, NN-3, NN-10 | Document Processing |
-| **M4** | OCR pipeline: classifier + extractors + VLM with budget | 3h | NN-6 | Document Processing |
-| **M5** | Layout parsing + semantic chunking + entity extraction + embedding | 2h | NN-1, NN-8 | Document Processing |
-| **M6** | Retrieval: BM25 + dense + tri-gram + RRF + reranker | 2h | NN-4, NN-8 | Retrieval + Grounding |
-| **M7** | Draft Engine: templates + extraction + generation | 3h | NN-5 | Draft Quality |
-| **M8** | Citation Validation: per-claim verifier, unsupported flagging | 1.5h | — | Retrieval + Grounding |
-| **M9** | Edit capture + structured diff + few-shot store | 2h | NN-5, NN-11 | Improvement from Edits |
-| **M10** | Rule Extractor + scheduler + admin endpoint | 1.5h | NN-9 | Improvement from Edits |
-| **M11** | UI: upload, draft view with click-cites, edit, admin | 3h | NN-10 | Documentation |
-| **M12** | Sample documents + eval harness + report | 2h | NN-8 | Retrieval + Edits + Docs |
-| **M13** | README + architecture pointers + demo script + submission | 1h | — | Documentation |
-
-**Total: ~27h.** With Claude Code, realistic at ~20h for you (you're reviewing, not typing).
+| # | Milestone | NN-N rules wired | Rubric category |
+|---|---|---|---|
+| **M0** | Bootstrap: repo, deps, FastAPI hello, Docker, logging, errors | NN-12 | Code Quality |
+| **M1** | Database + job queue + migrations + pgbouncer | NN-1, NN-3, NN-4, NN-8 | Code Quality |
+| **M2** | LLM Router + providers + cache + budget | NN-6, NN-7, NN-12 | Code Quality |
+| **M3** | Ingestion API + idempotency + reconciler + SSE | NN-1, NN-2, NN-3, NN-10 | Document Processing |
+| **M4** | OCR pipeline: classifier + extractors + VLM with budget | NN-6 | Document Processing |
+| **M5** | Layout parsing + semantic chunking + entity extraction + embedding | NN-1, NN-8 | Document Processing |
+| **M6** | Retrieval: BM25 + dense + tri-gram + RRF + reranker | NN-4, NN-8 | Retrieval + Grounding |
+| **M7** | Draft Engine: templates + extraction + generation | NN-5 | Draft Quality |
+| **M8** | Citation Validation: per-claim verifier, unsupported flagging | — | Retrieval + Grounding |
+| **M9** | Edit capture + structured diff + few-shot store | NN-5, NN-11 | Improvement from Edits |
+| **M10** | Rule Extractor + scheduler + admin endpoint | NN-9 | Improvement from Edits |
+| **M11** | UI: upload, draft view with click-cites, edit, admin | NN-10 | Documentation |
+| **M12** | Sample documents + eval harness + report | NN-8 | Retrieval + Edits + Docs |
+| **M13** | README + architecture pointers + demo script + submission | — | Documentation |
 
 ## When to delegate to sub-agents
 
@@ -100,19 +87,8 @@ When in doubt, **don't** spawn sub-agents. Sequential debugging is faster than p
 
 **Cut, in this order:**
 
-1. **First cut: M11 → Streamlit.** A 200-line Streamlit app does the demo. Lose visual polish, keep functionality. Saves ~2h.
+1. **First cut: M11 → Streamlit.** A 200-line Streamlit app does the demo. Lose visual polish, keep functionality.
 2. **Second cut: M10 rule-extractor sophistication.** Stage 1 (few-shot retrieval, which is M9) is the minimum credible improvement loop. M10 stage-2 (LLM-extracted rules) is the second half. Ship stage 1 well; ship stage 2 with a working endpoint but a simple clustering rule.
 3. **Third cut: M4 VLM fallback.** Ship without VLM escalation. PaddleOCR handles 90% of realistic samples. Document the gap; the per-document budget cap (NN-6) still applies to make the architecture coherent.
 4. **Never cut: M1's job queue, M3's idempotency, M5's reconciliation gate, M8's citation validator, M9's structured diff.** These are what the rubric is actually testing.
 
-## Submission checklist (M13)
-
-- [ ] Repo on GitHub, `tsensei` and `abubakarsiddik31` invited
-- [ ] `README.md` runs from a cold clone to a working demo in < 15 min
-- [ ] `docs/architecture/` complete (this directory, copied in)
-- [ ] `docs/DEMO.md` walks the reviewer through: upload → draft → edit → see-the-loop in < 5 min
-- [ ] `eval/reports/` contains the latest eval run
-- [ ] `tests/` passes `pytest`
-- [ ] Sample documents in `tests/fixtures/docs/` covering all OCR cases
-- [ ] Sample input/output pairs in `docs/samples/`
-- [ ] Email sent to `talha@ideabuilders.studio` with repo link + intro

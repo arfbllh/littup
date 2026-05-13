@@ -10,7 +10,7 @@ The exact file layout Claude Code will build into. Every milestone creates or mo
 - The UI is a separate Next.js app in `ui/` — could be swapped for Streamlit if time runs out.
 
 ```
-pearson-specter/                          # repo root
+littup/                                   # repo root
 ├── README.md                             # Setup, run, demo script (M13)
 ├── docker-compose.yml                    # api, worker, postgres, pgbouncer, vllm, ui (M0/M1)
 ├── Dockerfile                            # Python service image (M0)
