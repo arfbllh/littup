@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Pearson Specter Litt ("littup") turns messy legal-style PDFs into grounded, template-driven first drafts with inspectable citations, then uses operator edits to improve subsequent drafts. Single-workspace, single-operator demo.
+littup turns messy legal-style PDFs into grounded, template-driven first drafts with inspectable citations, then uses operator edits to improve subsequent drafts. Single-workspace, single-operator demo.
 
 Stack: Python 3.11 · FastAPI · Postgres 16 + pgvector · pdfplumber · PaddleOCR · docling · bge-large-en-v1.5 · bge-reranker-base · vLLM (Qwen 2.5) · Anthropic / OpenAI / Gemini SDKs · Next.js 15 (App Router).
 

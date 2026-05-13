@@ -31,7 +31,7 @@ None new. Every NN should already be tested and documented.
   - **Quickstart** — 6 commands max, copy-paste-runnable:
     ```bash
     git clone <repo>
-    cd pearson-specter
+    cd littup
     cp .env.example .env  # fill in API keys for hosted providers (optional if you have a GPU)
     make up               # docker compose up -d (api, worker, postgres, pgbouncer, vllm if GPU)
     make migrate          # apply migration 0001
