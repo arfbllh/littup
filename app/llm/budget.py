@@ -29,9 +29,27 @@ class BudgetTracker:
         self._prune(now)
         return sum(c for _, c in self._events)
 
-    def check(self, estimate_usd: float, now: datetime | None = None) -> bool:
-        now = now or datetime.now(timezone.utc)
-        return self.current_spend(now) + estimate_usd <= self.hourly_usd
+    async def check_and_reserve(self, estimate_usd: float, now: datetime | None = None) -> bool:
+        """Atomically check budget and reserve the estimate. Returns False if over budget."""
+        async with self._lock:
+            now = now or datetime.now(timezone.utc)
+            self._prune(now)
+            current = sum(c for _, c in self._events)
+            if current + estimate_usd > self.hourly_usd:
+                return False
+            self._events.append((now, estimate_usd))
+            return True
+
+    async def replace_reservation(self, estimate_usd: float, actual_usd: float, ts: datetime | None = None) -> None:
+        """Replace the reserved estimate with the actual cost after a successful call."""
+        async with self._lock:
+            # Remove the most recent matching reservation and add the actual cost.
+            for i in range(len(self._events) - 1, -1, -1):
+                if self._events[i][1] == estimate_usd:
+                    del self._events[i]
+                    break
+            self._events.append((ts or datetime.now(timezone.utc), actual_usd))
+            self._prune(datetime.now(timezone.utc))
 
     async def add(self, cost_usd: float, ts: datetime | None = None) -> None:
         async with self._lock:
