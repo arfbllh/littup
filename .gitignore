@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# uv
+uv.lock
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+
+# Ruff
+.ruff_cache/
+
+# Node / Next.js
+ui/node_modules/
+ui/.next/
+ui/out/
+ui/.env.local
+ui/.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Eval reports (generated, not committed)
+eval/reports/
+
+# Docker volumes
+postgres-data/
+
+# Alembic (generated SQL dumps, not the migrations themselves)
+*.sql.dump
