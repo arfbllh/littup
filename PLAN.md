@@ -1,145 +1,126 @@
-# Implementation Plan — M0 (Bootstrap) + M1 (Database & Jobs)
+# PLAN — M2: LLM Router
 
-## Pre-flight state
-
-M0 has **not** been implemented. The repo contains only directory skeletons
-(empty `__init__.py` files and `.gitkeep` files). No Python entry point, no
-Dockerfile, no `pyproject.toml`, no Makefile, no running service.
-
-M1 depends on M0. Both milestones will be implemented in sequence in this
-session.
+**Status:** Draft — awaiting approval before any code is written.
+**Dependencies satisfied:** M0 (structlog, AppError hierarchy, middleware) · M1 (DB models, session)
+**NN rules in scope:** NN-6, NN-7, NN-12
 
 ---
 
-## Phase 1 — M0: Bootstrap
+## Goal
 
-**Goal:** Bootable FastAPI service with structlog JSON logging, typed error
-hierarchy, `X-Request-ID` middleware, `/healthz` + `/readyz` endpoints, and
-a passing test suite. Postgres container present but no schema yet.
-
-### Files to create
-
-| File | Purpose |
-|------|---------|
-| `pyproject.toml` | Python 3.11+, all deps, `uv` toolchain |
-| `uv.lock` | Locked dependencies |
-| `.env.example` | Every env var, one-line comments |
-| `.gitignore` | Python/Node/IDE/`.env`/`eval/reports`/`__pycache__` |
-| `Makefile` | `up`, `down`, `logs`, `test`, `lint`, `fmt`, `migrate`, `seed`, `eval` |
-| `docker-compose.yml` | `api` + `postgres` services (pgbouncer + worker added in M1) |
-| `Dockerfile` | Multi-stage, non-root, copies `app/` + `config/` |
-| `app/main.py` | FastAPI app, mounts health router + middleware |
-| `app/settings.py` | Pydantic `BaseSettings`, all env vars |
-| `app/core/logging.py` | structlog: JSON in prod, console in dev; `request_id` bound |
-| `app/core/errors.py` | `AppError` + `NotFoundError`, `ValidationError`, `ConflictError`, `BudgetExceededError`, `LLMUnavailableError`, `IngestError` |
-| `app/core/middleware.py` | `X-Request-ID` middleware (reads or generates uuid7, binds to log context) + `AppError` exception handler |
-| `app/core/ids.py` | `new_uuid7()`, `sha256_hex()`, `short_id()` |
-| `app/api/routes/health.py` | `GET /healthz` → 200 `{"status":"ok"}`; `GET /readyz` → 503 if DB down |
-| `tests/conftest.py` | `httpx.AsyncClient` fixture against the app |
-| `tests/unit/test_health.py` | `/healthz` 200 + `X-Request-ID` echo |
-| `tests/unit/test_errors.py` | `AppError` → JSON envelope with `code`, `message`, `request_id` |
-| `tests/unit/test_logging.py` | Captured log lines are valid JSON with required fields |
-
-### M0 acceptance gates
-
-- `docker compose up` → `curl localhost:8000/healthz` returns 200
-- `X-Request-ID: test-123` echoed in response header
-- Every log line: valid JSON with `ts`, `level`, `request_id`, `event`
-- `make test` green; `make lint` green
+Ship a working `LLMRouter` with pluggable providers (vLLM, Anthropic, OpenAI, Gemini, Mock), tier-based routing with failover, content-addressed response cache, sliding-window budget tracker, and async LLM log writes. The router is the only place that touches LLM SDKs.
 
 ---
 
-## Phase 2 — M1: Database Layer & Job Queue
+## Files to create / modify
 
-**Goal:** All ORM models, three Postgres schemas, `pgvector`/`pg_trgm`/`legal_en`
-text search config, HNSW index, partitioned `llm_requests` table, pgbouncer in
-Compose, Postgres-backed job queue with heartbeats + stale reclaim, worker
-process skeleton, reconciler stub.
+### New dependencies (pyproject.toml)
+- `google-genai>=1.0.0` — Gemini SDK
+- `pyyaml>=6.0.0` — router.yaml parsing
 
-### Files to create / modify
+### Phase 1 — Foundation (main thread, all others depend on these)
 
-#### Database
+| File | What goes in it |
+|------|----------------|
+| `app/llm/types.py` | `Message`, `ContentPart`, `SamplingParams`, `LLMResponse`, `TaskTier`; `ProviderUnavailableError`, `SchemaViolationError`, `RateLimitedError` sub-typed from `AppError` |
+| `app/llm/providers/base.py` | `LLMProvider` Protocol — `name`, `capabilities`, `generate()`, `health()`, `cost_estimate()` |
+| `app/llm/providers/mock.py` | `MockProvider` — `register(substring, response)` lookup; tracks `call_count` per registration; raises `ProviderUnavailableError` when configured to do so |
+| `app/llm/config.py` | Pydantic models `ProviderConfig`, `TierConfig`, `CacheConfig`, `RouterConfig`; `load_router_config(path) -> RouterConfig` (yaml + env var substitution for api_key_env) |
+| `config/router.yaml` | Full config: all 5 tiers, 7 providers (3× vLLM, 2× Anthropic, 1× OpenAI, 1× Gemini), cache block |
+| `app/llm/cache.py` | `ResponseCache` — `build_key()` (NN-7: sha256 of json.dumps sorted), `get()`, `put()`, `evict_expired()` — backed by `llm_log.llm_cache` ORM |
+| `app/llm/budget.py` | `BudgetTracker` — in-memory deque sliding window (1h), `add(provider, cost, ts)`, `current_spend()`, `check(estimate) -> bool`; `reload_from_db(session)` for startup hydration (NN-6) |
+| `app/llm/log_repo.py` | `LLMLogRepo` — async background queue; `record(...)` enqueues, background task drains; non-blocking to callers (NN-12) |
+| `app/llm/providers/mock.py` | (same row above — placeholder for ordering) |
+| `app/llm/router.py` | `LLMRouter.__init__(config, providers, cache, budget, log_repo)`; `async generate(messages, *, task, schema, sampling, model_override, cache, trace_id) -> LLMResponse`; full routing flow: cache-check → tier loop → budget-check → provider.generate → schema-retry once → failover → log → raise `LLMUnavailableError` |
+| `app/llm/embedder.py` | `Embedder` Protocol + `StubEmbedder` (returns zeroed vectors) — real wiring in M6 |
+| `app/llm/reranker_model.py` | `Reranker` Protocol + `StubReranker` (returns original order) — real wiring in M6 |
 
-| File | Purpose |
-|------|---------|
-| `app/db/session.py` | Async engine + sessionmaker; `get_session()` FastAPI dep |
-| `app/db/models/base.py` | Declarative base, naming conventions |
-| `app/db/models/document.py` | `Document`, `Page`, `Block`, `Span` |
-| `app/db/models/chunk.py` | `Chunk` — `embedding VECTOR(1024)`, `text_tsv TSVECTOR`, `entities TEXT[]` |
-| `app/db/models/draft.py` | `Draft`, `Section`, `Citation` |
-| `app/db/models/edit.py` | `Edit` — `embedding VECTOR(1024)`, `few_shot_indexed_at` (NN-11) |
-| `app/db/models/template.py` | `TemplateVersion` — schema only, no YAML loading |
-| `app/db/models/job.py` | `Job`, `JobHistory` |
-| `app/db/models/llm_log.py` | `LLMRequest` (partitioned root + first partition), `LLMCache` |
-| `app/db/models/__init__.py` | Re-exports all models |
-| `app/db/migrations/env.py` | Alembic env wired to async engine |
-| `app/db/migrations/versions/0001_initial.py` | Hand-written migration (see below) |
+### Phase 2 — Providers (parallel sub-agents after Phase 1 is merged)
 
-#### Migration 0001 creates (in order)
+| File | Notes |
+|------|-------|
+| `app/llm/providers/vllm.py` | `VLLMProvider` — `httpx.AsyncClient` to OpenAI-compat API; `response_format` for JSON schema; cost $0 (local); health = GET /health |
+| `app/llm/providers/anthropic.py` | `AnthropicProvider` — `anthropic` SDK; tool-use pattern for structured output; supports vision `ContentPart`; cost from response usage |
+| `app/llm/providers/openai.py` | `OpenAIProvider` — `openai` SDK; `response_format={"type":"json_schema",...}` for structured; cost from response usage |
+| `app/llm/providers/gemini.py` | `GeminiProvider` — `google-genai` SDK; structured output via `response_mime_type="application/json"` + `response_schema`; cost from response metadata |
 
-1. Extensions: `vector`, `pg_trgm`, `pgcrypto`
-2. Schemas: `app`, `jobs`, `llm_log`
-3. `legal_en` text search config (COPY english; documented stub for M5 refinement) + `legal_en_test()` SQL function
-4. All tables in their proper schemas per M1 DDL spec
-5. Indexes:
-   - HNSW on `app.chunks.embedding` with `m=16, ef_construction=64` (NN-4)
-   - GIN on `text_tsv`
-   - B-tree on `document_id`
-   - trgm GIN on `chunks.text` (NN-8)
-   - GIN on `chunks.entities` (NN-8)
-6. `llm_log.llm_requests` partitioned root + first month's partition (2026-05)
+### Phase 3 — Wiring
 
-#### Jobs
+| File | What changes |
+|------|-------------|
+| `app/settings.py` | Add `ROUTER_CONFIG_PATH: str = "config/router.yaml"` |
+| `app/api/deps.py` | `get_llm_router()` — constructs `LLMRouter` once at startup (module-level singleton with `asyncio.Lock` guard); reads config from `settings.ROUTER_CONFIG_PATH`; reloads budget from DB on first call |
+| `app/api/routes/admin.py` | `GET /admin/llm-stats` — last-hour aggregates from `llm_log.llm_requests` (by tier, by provider: calls, p50/p95 latency, total cost, cache hit rate) + budget remaining |
+| `app/main.py` | Wire `admin_router` |
+| `app/llm/__init__.py` | Re-export `LLMRouter`, `TaskTier`, `LLMResponse` |
 
-| File | Purpose |
-|------|---------|
-| `app/jobs/kinds.py` | `JobKind` enum: `OCR`, `LAYOUT`, `CHUNKING`, `EMBEDDING`, `RULE_EXTRACTION`, `FEW_SHOT_INDEX`; empty `HANDLERS` registry |
-| `app/jobs/queue.py` | `JobQueue`: `enqueue`, `claim_one` (SKIP LOCKED), `heartbeat`, `complete`, `fail`, `reclaim_stuck`, `pending_count` |
-| `app/jobs/worker.py` | Poll + dispatch loop; per-kind `asyncio.Semaphore`; heartbeat task; SIGTERM graceful shutdown |
-| `app/jobs/reconciler.py` | `Reconciler`: `reclaim_stuck_jobs`, `find_partial_documents`, `find_unembedded_edits` (stub); 60s asyncio loop |
-| `app/jobs/scheduler.py` | Empty file, import path reserved for M10 |
+### Phase 4 — Tests
 
-#### Infra
+| File | Covers |
+|------|--------|
+| `tests/unit/test_cache_key.py` | NN-7: identical inputs → same key; dict reorder → same key; single char change → new key |
+| `tests/unit/test_budget.py` | Sliding window expires correctly; `check()` blocks at threshold; local ($0) always passes |
+| `tests/unit/test_router_failover.py` | Primary `MockProvider` raises `ProviderUnavailableError` → falls to secondary → succeeds; all fail → `LLMUnavailableError` |
+| `tests/unit/test_router_cache.py` | First call hits provider (call_count=1); second identical call hits cache (call_count still 1) |
+| `tests/unit/test_router_budget.py` | `LLM_HOURLY_BUDGET_USD=0.01`; expensive call → `BudgetExceededError`; `validation` tier with $0 local provider bypasses budget |
+| `tests/integration/test_llm_log.py` | After router call, `llm_log.llm_requests` has correct `trace_id`, `tier`, `tokens_*`, `cost_usd` |
 
-| File | Purpose |
-|------|---------|
-| `docker-compose.yml` | Add `pgbouncer` + `worker` services; postgres 16 |
-| `docker/postgres/init.sql` | `CREATE EXTENSION IF NOT EXISTS vector` etc. (cold-start speedup) |
-| `docker/pgbouncer/pgbouncer.ini` | Transaction-pooling mode config |
-| `docker/pgbouncer/userlist.txt` | Credentials file |
-| `alembic.ini` | Alembic config pointing to `app/db/migrations` |
+---
 
-#### Tests
+## Routing logic (exact flow)
 
-| File | What it verifies |
-|------|-----------------|
-| `tests/integration/test_migrations.py` | Extensions installed; `legal_en` config + `legal_en_test()` works; HNSW index exists with correct params; `llm_requests` partition exists |
-| `tests/integration/test_job_queue.py` | Enqueue; two-worker exclusive claim; complete; fail + retry; stale reclaim |
-| `tests/integration/test_reconciler.py` | Document stuck in `ocr_running` with old `updated_at` is found |
-| `tests/unit/test_session.py` | Session lifecycle; rollback on exception |
-
-### M1 acceptance gates (NN-1, NN-3, NN-4, NN-8)
-
-- `make migrate` applies 0001 against a clean Postgres in < 5s
-- All three schemas exist; each queryable
-- `SELECT to_tsvector('legal_en', 'plaintiff Pearson Specter Litt filed')` returns non-empty tsvector
-- `worker` container starts and logs "polling for jobs"
-- Enqueue 5 jobs, 2 workers → each claimed exactly once (SKIP LOCKED)
-- Kill worker mid-job → `reclaim_stuck` re-claims after 2 min
-- `psql` via pgbouncer succeeds
-- All integration tests pass
+```
+generate(messages, task, schema, sampling, model_override, cache, trace_id):
+  1. build cache_key (NN-7)
+  2. if cache enabled: check ResponseCache → return hit (still logs as cache_hit=True)
+  3. provider_names = [model_override] if override else config.tiers[task]
+  4. for provider_name in provider_names:
+       provider = providers[provider_name]
+       if provider.cost_estimate(est_in, est_out) > 0:   # hosted tier
+           if not budget.check(estimate): raise BudgetExceededError
+       t0 = now()
+       try:
+           response = await provider.generate(messages, schema=schema, sampling=sampling)
+       except SchemaViolationError:
+           # retry once on same provider with stricter reminder
+           response = await provider.generate(messages_with_retry, schema=schema, ...)
+       except (ProviderUnavailableError, RateLimitedError):
+           log warning; continue
+       budget.add(provider.name, response.cost_usd, now())
+       cache.put(cache_key, response, ttl_hours=config.cache.ttl_hours)
+       log_repo.record(trace_id, tier, provider, model, tokens, cost, latency, status="ok")
+       return response
+  5. raise LLMUnavailableError("all providers exhausted for tier={task}")
+     log_repo.record(..., status="failed")
+```
 
 ---
 
 ## Key design decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| `text_tsv` as a **regular** column (not GENERATED ALWAYS) | Lets us use `'legal_en'` config not `'english'`; GENERATED columns can't reference a mutable config object safely in older pgvector builds |
-| Worker as a **separate** Compose service | NN-3: API never does ingestion work |
-| Heartbeat every 10s, reclaim after 2 min | 12× margin; resistant to slow GC pauses |
-| First partition named `llm_requests_2026_05` | Matches current month; comment documents adding future partitions |
-| `dedup_key UNIQUE` on `jobs` | Prevents double-enqueue of identical work without application-level locking |
+1. **Budget bypasses local ($0) providers.** `VLLMProvider.cost_estimate()` returns 0. Budget check is `if estimate > 0`, so local tiers always proceed even at `LLM_HOURLY_BUDGET_USD=0`.
+
+2. **Cache backed by Postgres `llm_log.llm_cache`.** `LLMCache` ORM model already exists from M1. `ResponseCache.get()` deserialises the `response` JSONB column back to `LLMResponse`.
+
+3. **`LLMLogRepo` is fire-and-forget.** It maintains an `asyncio.Queue`; `record()` puts without waiting; a background task drains. Avoids blocking the router on DB writes.
+
+4. **Schema retry is in the router, not providers.** One retry on the same provider with an appended "Return valid JSON matching the schema" instruction. If it fails again, escalate to next provider in tier.
+
+5. **Sub-agent delegation for providers.** After Phase 1 is committed, four sub-agents run in parallel — one per provider file. The router itself never changes.
+
+6. **`get_llm_router()` is a module-level singleton.** Not a new instance per request. Budget state must survive across requests; recreating it each time would reset the sliding window.
+
+---
+
+## Acceptance criteria (from spec)
+
+- [ ] All four real provider classes import without error with mocked HTTP
+- [ ] Mock-driven tests cover: failover, cache hit, schema violation retry, budget block
+- [ ] Cache key is content-addressed (changing a single character changes the key)
+- [ ] `/admin/llm-stats` returns valid JSON (zeros if no calls yet)
+- [ ] `LLM_HOURLY_BUDGET_USD=0` blocks hosted calls but local-tier ($0) calls proceed
+- [ ] `pytest --live` smoke test exists for Anthropic (skipped unless flag set)
+- [ ] Every router call writes a row to `llm_log.llm_requests`
 
 ---
 
@@ -147,42 +128,19 @@ process skeleton, reconciler stub.
 
 | Risk | Mitigation |
 |------|-----------|
-| `pgvector` not installed in the Postgres image | Use `pgvector/pgvector:pg16` image, not vanilla `postgres:16` |
-| Alembic async dialect setup | Use `asyncpg` driver for the engine; `run_sync` in `env.py` for the migration connection |
-| Integration tests need a live Postgres | `conftest.py` reads `TEST_DATABASE_URL`; CI uses a service container; local dev uses Compose |
-| `pg_partman` not available in base image | Skip partman; do month partitioning manually; comment explaining where partman would go |
-
----
-
-## Out of scope (not in this plan)
-
-- Any handler logic (OCR, embedding, etc.)
-- APScheduler (M10)
-- Edit indexing job handler (M9)
-- Template YAML population (M7)
-- LLM router (M2)
-- Next.js UI (M11)
+| Gemini SDK (`google-genai`) API shape differs from OpenAI compat | Isolate behind provider interface; only the provider file changes if SDK changes |
+| Partitioned `llm_requests` table complicates ORM inserts | Use raw `INSERT` SQL in `LLMLogRepo.record()` targeting the table name; SQLAlchemy partition routing handles it at the DB level |
+| `asyncio.Queue` in log_repo leaks if no task drains it | Background task started in `get_llm_router()` at singleton creation; cancelled on app shutdown via lifespan |
+| `google-genai` not in pyproject.toml | Add to `[project.dependencies]` before Phase 2 |
 
 ---
 
 ## Sequence
 
 ```
-1. pyproject.toml + uv.lock
-2. .env.example, .gitignore, Makefile
-3. Dockerfile, docker-compose.yml (M0 version, api + postgres only)
-4. app/settings.py
-5. app/core/{ids,logging,errors,middleware}.py
-6. app/main.py + app/api/routes/health.py
-7. tests/conftest.py + M0 unit tests
-8. [M0 acceptance gate check]
-9. app/db/models/base.py + all model files
-10. app/db/session.py + alembic.ini + migrations/env.py
-11. migrations/0001_initial.py
-12. app/jobs/{kinds,queue,worker,reconciler,scheduler}.py
-13. docker-compose.yml upgrade (pgbouncer + worker)
-14. docker/postgres/init.sql + docker/pgbouncer/
-15. Integration + unit tests
-16. [M1 acceptance gate check]
-17. docs/milestones/M0-DONE.md + M1-DONE.md
+Phase 1 (main thread):   types → base → mock → config → router.yaml → cache → budget → log_repo → router → embedder → reranker
+Phase 2 (4 sub-agents):  vllm.py | anthropic.py | openai.py | gemini.py
+Phase 3 (main thread):   deps.py → admin.py → main.py → llm/__init__.py → pyproject.toml
+Phase 4 (main thread):   all 6 test files
+Done:                     M2-DONE.md
 ```
