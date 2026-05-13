@@ -35,5 +35,8 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 32
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
 
+    # LLM router
+    ROUTER_CONFIG_PATH: str = "config/router.yaml"
+
 
 settings = Settings()

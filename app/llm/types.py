@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 TaskTier = Literal["extraction", "generation", "validation", "vision", "analysis"]
+ProviderCapability = Literal["text", "json", "tools", "vision", "streaming"]
 
 
-class ContentPart(BaseModel):
-    type: Literal["text", "image"]
-    text: str | None = None
-    source: dict | None = None
+class TextPart(BaseModel):
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImagePart(BaseModel):
+    type: Literal["image"] = "image"
+    source: dict[str, Any]
+
+
+ContentPart = TextPart | ImagePart
 
 
 class Message(BaseModel):
@@ -26,8 +34,8 @@ class SamplingParams(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    text: str
-    structured: dict | None = None
+    text: str = ""
+    structured: dict[str, Any] | None = None
     model_used: str
     provider: str
     tokens_in: int = 0
@@ -35,17 +43,5 @@ class LLMResponse(BaseModel):
     cost_usd: float = 0.0
     latency_ms: int = 0
     finish_reason: str = "stop"
-    cache_hit: bool = False
-
-
-# Internal signals — caught only within the router, never exposed as HTTP errors
-class ProviderUnavailable(Exception):
-    pass
-
-
-class SchemaViolation(Exception):
-    pass
-
-
-class RateLimited(Exception):
-    pass
+    cached_hit: bool = False
+    raw: dict[str, Any] | None = Field(default=None, exclude=True)

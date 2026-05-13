@@ -27,11 +27,11 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # SSE
     "sse-starlette>=2.1.0",
-    # LLM SDKs (used in M2)
+    # LLM SDKs (M2)
     "anthropic>=0.30.0",
     "openai>=1.35.0",
-    "google-genai>=1.0.0",
-    "pyyaml>=6.0.0",
+    "google-genai>=0.3.0",
+    "PyYAML>=6.0.1",
     # Ingestion (stubs — used in M4/M5)
     "pdfplumber>=0.11.0",
     "Pillow>=10.3.0",

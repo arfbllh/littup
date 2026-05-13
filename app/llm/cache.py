@@ -2,80 +2,114 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models.llm_log import LLMCache
 from app.llm.types import LLMResponse, Message, SamplingParams
 
-if TYPE_CHECKING:
-    pass
+
+def _canonicalize_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    out = []
+    for m in messages:
+        if isinstance(m.content, str):
+            content: Any = m.content
+        else:
+            content = [p.model_dump() for p in m.content]
+        out.append({"role": m.role, "content": content})
+    return out
 
 
-def build_key(
-    *,
+def build_cache_key(
     model_id: str,
     messages: list[Message],
-    schema: type[BaseModel] | None,
+    schema: dict[str, Any] | None,
     sampling: SamplingParams,
 ) -> str:
-    """NN-7: content-addressed sha256 of all prompt inputs."""
     payload = {
         "model_id": model_id,
-        "messages": [m.model_dump() for m in messages],
-        "schema": schema.model_json_schema() if schema else None,
+        "messages": _canonicalize_messages(messages),
+        "schema": schema,
         "sampling": sampling.model_dump(),
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 class ResponseCache:
-    def __init__(self, session_factory) -> None:
-        self._session_factory = session_factory
+    """Postgres-backed LLM response cache. Content-addressed (NN-7)."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker | None,
+        ttl_hours: int = 24,
+        enabled: bool = True,
+    ):
+        self._sf = session_factory
+        self.ttl_hours = ttl_hours
+        self.enabled = enabled
+        # Process-local fallback when no DB factory is provided (tests).
+        self._mem: dict[str, tuple[datetime, LLMResponse]] = {}
+
+    def build_key(
+        self,
+        model_id: str,
+        messages: list[Message],
+        schema: dict[str, Any] | None,
+        sampling: SamplingParams,
+    ) -> str:
+        return build_cache_key(model_id, messages, schema, sampling)
 
     async def get(self, key: str) -> LLMResponse | None:
-        async with self._session_factory() as session:
-            now = datetime.now(UTC)
-            result = await session.execute(
-                select(LLMCache).where(
-                    LLMCache.cache_key == key,
-                    (LLMCache.expires_at.is_(None)) | (LLMCache.expires_at > now),
-                )
-            )
-            row = result.scalar_one_or_none()
-            if row and row.response:
-                response = LLMResponse.model_validate(row.response)
-                response.cache_hit = True
-                return response
+        if not self.enabled:
             return None
+        if self._sf is None:
+            row = self._mem.get(key)
+            if not row:
+                return None
+            expires, resp = row
+            if expires < datetime.now(timezone.utc):
+                self._mem.pop(key, None)
+                return None
+            return resp.model_copy(update={"cached_hit": True})
 
-    async def put(self, key: str, response: LLMResponse, *, ttl_hours: int, model: str = "") -> None:
-        async with self._session_factory() as session:
-            expires = datetime.now(UTC) + timedelta(hours=ttl_hours)
-            stmt = (
-                insert(LLMCache)
-                .values(
-                    cache_key=key,
-                    response=response.model_dump(),
-                    model=model,
-                    expires_at=expires,
-                )
-                .on_conflict_do_update(
-                    index_elements=["cache_key"],
-                    set_={"response": response.model_dump(), "expires_at": expires},
-                )
+        async with self._sf() as session:
+            row = (
+                await session.execute(select(LLMCache).where(LLMCache.cache_key == key))
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if row.expires_at and row.expires_at < datetime.now(timezone.utc):
+                return None
+            resp = LLMResponse.model_validate(row.response)
+            resp.cached_hit = True
+            return resp
+
+    async def put(self, key: str, response: LLMResponse) -> None:
+        if not self.enabled:
+            return
+        expires = datetime.now(timezone.utc) + timedelta(hours=self.ttl_hours)
+        if self._sf is None:
+            self._mem[key] = (expires, response.model_copy(update={"cached_hit": False}))
+            return
+        async with self._sf() as session:
+            stmt = insert(LLMCache).values(
+                cache_key=key,
+                response=response.model_dump(mode="json"),
+                model=response.model_used,
+                expires_at=expires,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[LLMCache.cache_key],
+                set_={
+                    "response": stmt.excluded.response,
+                    "model": stmt.excluded.model,
+                    "expires_at": stmt.excluded.expires_at,
+                },
             )
             await session.execute(stmt)
             await session.commit()
-
-    async def evict_expired(self) -> int:
-        async with self._session_factory() as session:
-            result = await session.execute(
-                delete(LLMCache).where(LLMCache.expires_at < datetime.now(UTC))
-            )
-            await session.commit()
-            return result.rowcount
