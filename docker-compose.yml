@@ -53,18 +53,17 @@ services:
     restart: unless-stopped
 
   pgbouncer:
-    image: bitnami/pgbouncer:latest
+    image: edoburu/pgbouncer:latest
     environment:
-      POSTGRESQL_HOST: postgres
-      POSTGRESQL_PORT: 5432
-      POSTGRESQL_USERNAME: littup
-      POSTGRESQL_PASSWORD: littup
-      POSTGRESQL_DATABASE: littup
-      PGBOUNCER_DATABASE: littup
-      PGBOUNCER_POOL_MODE: transaction
-      PGBOUNCER_MAX_CLIENT_CONN: 200
-      PGBOUNCER_DEFAULT_POOL_SIZE: 20
-      PGBOUNCER_AUTH_TYPE: md5
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: littup
+      DB_PASSWORD: littup
+      DB_NAME: littup
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 20
+      AUTH_TYPE: scram-sha-256
     ports:
       - "6432:5432"
     depends_on:

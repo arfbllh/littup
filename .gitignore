@@ -50,3 +50,6 @@ postgres-data/
 
 # Alembic (generated SQL dumps, not the migrations themselves)
 *.sql.dump
+
+# claude settings (contains local paths and commands)
+.claude/settings.local.json

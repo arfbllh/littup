@@ -16,7 +16,16 @@
       "Bash(docker exec littup-postgres-1 *)",
       "Bash(docker port littup-postgres-1 *)",
       "Bash(TEST_DATABASE_URL=\"postgresql+asyncpg://littup:littup@localhost:5432/littup_test\" .venv/bin/python *)",
-      "Bash(git log *)"
+      "Bash(git log *)",
+      "Bash(git stash *)",
+      "Bash(docker compose *)",
+      "Bash(curl -s http://localhost:8000/healthz)",
+      "Bash(docker pull *)",
+      "Bash(curl -s -H 'X-Request-ID: test-123' http://localhost:8000/healthz -D -)",
+      "Bash(curl -sI -H 'X-Request-ID: test-123' http://localhost:8000/healthz)",
+      "Bash(curl -s http://localhost:8000/readyz)",
+      "Bash(psql postgresql://littup:littup@localhost:6432/littup -c \"SELECT COUNT\\(*\\) FROM jobs.jobs\")",
+      "Bash(PGPASSWORD=littup docker run *)"
     ]
   }
 }
