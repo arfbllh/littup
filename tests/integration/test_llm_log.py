@@ -1,88 +1,51 @@
 import asyncio
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import select
 
+from app.db.models.llm_log import LLMRequest
 from app.llm.budget import BudgetTracker
-from app.llm.config import CacheConfig, ProviderConfig, RouterConfig
+from app.llm.cache import ResponseCache
+from app.llm.config import RouterConfig, TierConfig
 from app.llm.log_repo import LLMLogRepo
 from app.llm.providers.mock import MockProvider
 from app.llm.router import LLMRouter
-from app.llm.types import LLMResponse, Message
-
-
-class _NoopCache:
-    async def get(self, key):
-        return None
-
-    async def put(self, key, response, *, ttl_hours, model=""):
-        return None
+from app.llm.types import Message
 
 
 @pytest.mark.asyncio
-async def test_router_call_writes_llm_log_row(db_engine):
-    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+async def test_router_call_writes_llm_log_row(db_engine, db_session):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    provider = MockProvider(name="mock-int", cost_per_call=0.0)
-    provider.register(
-        "integration_test_marker",
-        LLMResponse(
-            text="ok",
-            model_used="mock-model-x",
-            provider="mock-int",
-            tokens_in=42,
-            tokens_out=17,
-            cost_usd=0.0,
-        ),
+    sf = async_sessionmaker(db_engine, expire_on_commit=False)
+    log_repo = LLMLogRepo(session_factory=sf)
+    p = MockProvider(name="mockp", default_text="hi")
+    cfg = RouterConfig(tiers={"extraction": TierConfig(providers=["mockp"], bypass_budget=True)})
+    r = LLMRouter(
+        cfg,
+        {"mockp": p},
+        ResponseCache(session_factory=None, enabled=False),
+        BudgetTracker(hourly_usd=10.0),
+        log_repo,
     )
 
-    config = RouterConfig(
-        default_locale="local",
-        tiers={"extraction": ["mock-int"]},
-        providers={"mock-int": ProviderConfig(type="mock", model="mock-model-x")},
-        cache=CacheConfig(enabled=False),
-    )
+    trace_id = "trace-llm-log-test"
+    await r.generate([Message(role="user", content="hello")], task="extraction", trace_id=trace_id)
+    await log_repo.drain()
 
-    log_repo = LLMLogRepo(session_factory)
-    log_repo.start()
-    try:
-        router = LLMRouter(
-            config=config,
-            providers={"mock-int": provider},
-            cache=_NoopCache(),  # type: ignore[arg-type]
-            budget=BudgetTracker(hourly_limit_usd=10.0),
-            log_repo=log_repo,
+    # Allow Postgres to flush.
+    await asyncio.sleep(0.05)
+
+    rows = (
+        await db_session.execute(
+            select(LLMRequest).where(LLMRequest.trace_id == trace_id)
         )
-
-        trace_id = "trace-int-llm-log-42"
-        await router.generate(
-            [Message(role="user", content="integration_test_marker")],
-            task="extraction",
-            trace_id=trace_id,
-        )
-
-        # Wait for background drain
-        await asyncio.wait_for(log_repo._queue.join(), timeout=5.0)  # noqa: SLF001
-    finally:
-        await log_repo.stop()
-
-    async with session_factory() as session:
-        result = await session.execute(
-            text(
-                "SELECT trace_id, tier, provider, model, tokens_in, tokens_out, cost_usd, status, cache_hit "
-                "FROM llm_log.llm_requests WHERE trace_id = :tid"
-            ),
-            {"tid": trace_id},
-        )
-        row = result.mappings().one()
-
-    assert row["trace_id"] == trace_id
-    assert row["tier"] == "extraction"
-    assert row["provider"] == "mock-int"
-    assert row["model"] == "mock-model-x"
-    assert row["tokens_in"] == 42
-    assert row["tokens_out"] == 17
-    assert float(row["cost_usd"]) == 0.0
-    assert row["status"] == "ok"
-    assert row["cache_hit"] is False
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.tier == "extraction"
+    assert row.provider == "mockp"
+    assert row.tokens_in == 1
+    assert row.tokens_out == 1
+    assert row.cache_hit is False
+    assert row.status == "ok"

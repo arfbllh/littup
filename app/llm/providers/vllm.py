@@ -1,36 +1,52 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Any
 
 import httpx
-from pydantic import BaseModel
 
-from app.llm.types import LLMResponse, Message, ProviderUnavailable, SamplingParams, SchemaViolation
+from app.llm.errors import ProviderUnavailable, RateLimited, SchemaViolation
+from app.llm.providers.base import LLMProvider, cost_from_pricing, now_ms
+from app.llm.types import LLMResponse, Message, ProviderCapability, SamplingParams
 
-_DEFAULT = SamplingParams()
 
+class VLLMProvider(LLMProvider):
+    """Talks to a local vLLM server over its OpenAI-compatible HTTP API."""
 
-class VLLMProvider:
-    """OpenAI-compatible client for local vLLM. cost_estimate always returns 0."""
-
-    def __init__(self, name: str, base_url: str, model: str, timeout_s: int = 60) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        base_url: str,
+        model: str,
+        timeout_s: int = 60,
+        input_cost_per_1k: float = 0.0,
+        output_cost_per_1k: float = 0.0,
+        client: httpx.AsyncClient | None = None,
+    ):
         self.name = name
-        self.capabilities: set[Literal["text", "json", "tools", "vision", "streaming"]] = {"text", "json"}
-        self._model = model
-        self._timeout = timeout_s
-        self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout_s)
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout_s = timeout_s
+        self.input_cost_per_1k = input_cost_per_1k
+        self.output_cost_per_1k = output_cost_per_1k
+        self.capabilities: set[ProviderCapability] = {"text", "json", "streaming"}
+        self._client = client or httpx.AsyncClient(timeout=timeout_s)
 
     async def generate(
         self,
         messages: list[Message],
         *,
-        schema: type[BaseModel] | None = None,
-        sampling: SamplingParams = _DEFAULT,
+        schema: dict[str, Any] | None = None,
+        sampling: SamplingParams | None = None,
     ) -> LLMResponse:
-        payload: dict = {
-            "model": self._model,
-            "messages": [self._fmt(m) for m in messages],
+        sampling = sampling or SamplingParams()
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": m.role, "content": m.content if isinstance(m.content, str) else [p.model_dump() for p in m.content]}
+                for m in messages
+            ],
             "max_tokens": sampling.max_tokens,
             "temperature": sampling.temperature,
             "top_p": sampling.top_p,
@@ -38,64 +54,53 @@ class VLLMProvider:
         if sampling.stop:
             payload["stop"] = sampling.stop
         if schema is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "output", "schema": schema.model_json_schema()},
-            }
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "out", "schema": schema}}
 
+        t0 = now_ms()
         try:
-            resp = await self._client.post("/chat/completions", json=payload)
-            resp.raise_for_status()
-        except httpx.TimeoutException as e:
-            raise ProviderUnavailable(f"vLLM timeout: {e}") from e
-        except httpx.HTTPStatusError as e:
-            raise ProviderUnavailable(f"vLLM HTTP {e.response.status_code}") from e
-        except httpx.RequestError as e:
-            raise ProviderUnavailable(f"vLLM connection error: {e}") from e
+            resp = await self._client.post(f"{self.base_url}/chat/completions", json=payload)
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.NetworkError) as e:
+            raise ProviderUnavailable(f"vllm:{self.name}: {e}") from e
+
+        if resp.status_code == 429:
+            raise RateLimited(f"vllm:{self.name}: 429")
+        if resp.status_code >= 500:
+            raise ProviderUnavailable(f"vllm:{self.name}: {resp.status_code}")
+        if resp.status_code >= 400:
+            raise ProviderUnavailable(f"vllm:{self.name}: {resp.status_code} {resp.text[:200]}")
 
         data = resp.json()
         choice = data["choices"][0]
-        content: str = choice["message"]["content"] or ""
+        text = choice["message"].get("content") or ""
         usage = data.get("usage", {})
+        tokens_in = usage.get("prompt_tokens", 0)
+        tokens_out = usage.get("completion_tokens", 0)
 
         structured = None
         if schema is not None:
             try:
-                structured = json.loads(content)
+                structured = json.loads(text)
             except json.JSONDecodeError as e:
-                raise SchemaViolation(f"vLLM returned invalid JSON: {e}") from e
+                raise SchemaViolation(f"vllm:{self.name}: non-JSON output") from e
 
         return LLMResponse(
-            text=content,
+            text=text,
             structured=structured,
-            model_used=data.get("model", self._model),
+            model_used=self.model,
             provider=self.name,
-            tokens_in=usage.get("prompt_tokens", 0),
-            tokens_out=usage.get("completion_tokens", 0),
-            cost_usd=0.0,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=self.cost_estimate(tokens_in, tokens_out),
+            latency_ms=now_ms() - t0,
             finish_reason=choice.get("finish_reason", "stop"),
         )
 
-    @staticmethod
-    def _fmt(m: Message) -> dict:
-        if isinstance(m.content, str):
-            return {"role": m.role, "content": m.content}
-        return {
-            "role": m.role,
-            "content": [
-                {"type": p.type, "text": p.text}
-                if p.type == "text"
-                else {"type": "image_url", "image_url": p.source}
-                for p in m.content
-            ],
-        }
-
     async def health(self) -> bool:
         try:
-            resp = await self._client.get("/health", timeout=5)
-            return resp.status_code == 200
+            r = await self._client.get(f"{self.base_url}/models", timeout=5.0)
+            return r.status_code < 500
         except Exception:
             return False
 
     def cost_estimate(self, tokens_in: int, tokens_out: int) -> float:
-        return 0.0
+        return cost_from_pricing(tokens_in, tokens_out, self.input_cost_per_1k, self.output_cost_per_1k)

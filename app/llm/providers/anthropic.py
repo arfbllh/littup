@@ -1,155 +1,124 @@
 from __future__ import annotations
 
-import json
-from typing import Literal
+import os
+from typing import Any
 
-import anthropic as anthropic_sdk
-from pydantic import BaseModel
-
-from app.llm.types import (
-    ContentPart,
-    LLMResponse,
-    Message,
-    ProviderUnavailable,
-    RateLimited,
-    SamplingParams,
-    SchemaViolation,
-)
-
-# USD per 1M tokens: (input, output)
-_PRICING: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (0.80, 4.00),
-    "claude-haiku-4-5-20251001": (0.80, 4.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-sonnet-4-6": (3.00, 15.00),
-}
-_DEFAULT_PRICING = (3.00, 15.00)
-
-_DEFAULT = SamplingParams()
+from app.llm.errors import ProviderUnavailable, RateLimited, SchemaViolation
+from app.llm.providers.base import LLMProvider, cost_from_pricing, now_ms
+from app.llm.types import LLMResponse, Message, ProviderCapability, SamplingParams
 
 
-class AnthropicProvider:
-    """Anthropic Claude via official SDK. Uses tool-use for structured output."""
+class AnthropicProvider(LLMProvider):
+    """Anthropic Claude provider. Uses tool-use for JSON-schema structured output."""
 
-    def __init__(self, name: str, model: str, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        model: str,
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        timeout_s: int = 60,
+        input_cost_per_1k: float = 0.0008,
+        output_cost_per_1k: float = 0.004,
+        client: Any | None = None,
+    ):
         self.name = name
-        self.capabilities: set[Literal["text", "json", "tools", "vision", "streaming"]] = {
-            "text",
-            "json",
-            "tools",
-            "vision",
-        }
-        self._model = model
-        self._client = anthropic_sdk.AsyncAnthropic(api_key=api_key or "")
+        self.model = model
+        self.timeout_s = timeout_s
+        self.input_cost_per_1k = input_cost_per_1k
+        self.output_cost_per_1k = output_cost_per_1k
+        self.capabilities: set[ProviderCapability] = {"text", "json", "tools", "vision"}
+        self._api_key = os.environ.get(api_key_env, "")
+        self._client = client
+        self._available = bool(self._api_key) or client is not None
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+        if not self._api_key:
+            raise ProviderUnavailable(f"anthropic:{self.name}: api key missing")
+        try:
+            import anthropic
+        except ImportError as e:
+            raise ProviderUnavailable("anthropic SDK not installed") from e
+        self._client = anthropic.AsyncAnthropic(api_key=self._api_key, timeout=self.timeout_s)
+        return self._client
 
     async def generate(
         self,
         messages: list[Message],
         *,
-        schema: type[BaseModel] | None = None,
-        sampling: SamplingParams = _DEFAULT,
+        schema: dict[str, Any] | None = None,
+        sampling: SamplingParams | None = None,
     ) -> LLMResponse:
-        system, api_messages = self._split(messages)
+        sampling = sampling or SamplingParams()
+        client = self._ensure_client()
 
-        kwargs: dict = {
-            "model": self._model,
-            "max_tokens": sampling.max_tokens,
-            "temperature": sampling.temperature,
-            "messages": api_messages,
-        }
-        if system:
-            kwargs["system"] = system
-        if sampling.stop:
-            kwargs["stop_sequences"] = sampling.stop
-
-        if schema is not None:
-            kwargs["tools"] = [
-                {
-                    "name": "return_output",
-                    "description": "Return structured output matching the schema exactly.",
-                    "input_schema": schema.model_json_schema(),
-                }
-            ]
-            kwargs["tool_choice"] = {"type": "tool", "name": "return_output"}
-
-        try:
-            resp = await self._client.messages.create(**kwargs)
-        except anthropic_sdk.RateLimitError as e:
-            raise RateLimited(str(e)) from e
-        except anthropic_sdk.APIConnectionError as e:
-            raise ProviderUnavailable(str(e)) from e
-        except anthropic_sdk.APIStatusError as e:
-            raise ProviderUnavailable(f"Anthropic {e.status_code}: {e.message}") from e
-
-        in_tok = resp.usage.input_tokens
-        out_tok = resp.usage.output_tokens
-
-        text_content = ""
-        structured = None
-
-        if schema is not None:
-            for block in resp.content:
-                if block.type == "tool_use" and block.name == "return_output":
-                    structured = block.input
-                    text_content = json.dumps(structured)
-                    break
-            if structured is None:
-                raise SchemaViolation("Anthropic did not invoke return_output tool")
-        else:
-            for block in resp.content:
-                if block.type == "text":
-                    text_content = block.text
-                    break
-
-        return LLMResponse(
-            text=text_content,
-            structured=structured,
-            model_used=resp.model,
-            provider=self.name,
-            tokens_in=in_tok,
-            tokens_out=out_tok,
-            cost_usd=self._cost(in_tok, out_tok),
-            finish_reason=resp.stop_reason or "stop",
-        )
-
-    @staticmethod
-    def _split(messages: list[Message]) -> tuple[str, list[dict]]:
-        system_parts: list[str] = []
-        api: list[dict] = []
+        system_blocks: list[str] = []
+        rest: list[dict[str, Any]] = []
         for m in messages:
             if m.role == "system":
-                text = m.content if isinstance(m.content, str) else _parts_to_text(m.content)
-                system_parts.append(text)
+                if isinstance(m.content, str):
+                    system_blocks.append(m.content)
             else:
-                api.append({"role": m.role, "content": _format_content(m.content)})
-        return "\n\n".join(system_parts), api
+                content = m.content if isinstance(m.content, str) else [p.model_dump() for p in m.content]
+                rest.append({"role": m.role, "content": content})
 
-    def _cost(self, tokens_in: int, tokens_out: int) -> float:
-        in_p, out_p = _PRICING.get(self._model, _DEFAULT_PRICING)
-        return (tokens_in * in_p + tokens_out * out_p) / 1_000_000
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": sampling.max_tokens,
+            "temperature": sampling.temperature,
+            "messages": rest,
+        }
+        if system_blocks:
+            kwargs["system"] = "\n\n".join(system_blocks)
+        if sampling.stop:
+            kwargs["stop_sequences"] = sampling.stop
+        if schema is not None:
+            kwargs["tools"] = [
+                {"name": "return", "description": "Return the answer.", "input_schema": schema}
+            ]
+            kwargs["tool_choice"] = {"type": "tool", "name": "return"}
+
+        t0 = now_ms()
+        try:
+            resp = await client.messages.create(**kwargs)
+        except Exception as e:
+            klass = type(e).__name__
+            if "RateLimit" in klass:
+                raise RateLimited(str(e)) from e
+            raise ProviderUnavailable(f"anthropic:{self.name}: {e}") from e
+
+        text = ""
+        structured: dict[str, Any] | None = None
+        for block in getattr(resp, "content", []) or []:
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                text += getattr(block, "text", "") or ""
+            elif btype == "tool_use" and getattr(block, "name", "") == "return":
+                structured = getattr(block, "input", None) or {}
+
+        if schema is not None and structured is None:
+            raise SchemaViolation(f"anthropic:{self.name}: model did not call return tool")
+
+        usage = getattr(resp, "usage", None)
+        tokens_in = getattr(usage, "input_tokens", 0) if usage else 0
+        tokens_out = getattr(usage, "output_tokens", 0) if usage else 0
+
+        return LLMResponse(
+            text=text,
+            structured=structured,
+            model_used=self.model,
+            provider=self.name,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=self.cost_estimate(tokens_in, tokens_out),
+            latency_ms=now_ms() - t0,
+            finish_reason=getattr(resp, "stop_reason", "stop") or "stop",
+        )
 
     async def health(self) -> bool:
-        try:
-            await self._client.models.list()
-            return True
-        except Exception:
-            return False
+        return self._available
 
     def cost_estimate(self, tokens_in: int, tokens_out: int) -> float:
-        return self._cost(tokens_in, tokens_out)
-
-
-def _parts_to_text(parts: list[ContentPart]) -> str:
-    return " ".join(p.text or "" for p in parts if p.type == "text")
-
-
-def _format_content(content: str | list[ContentPart]) -> str | list[dict]:
-    if isinstance(content, str):
-        return content
-    result: list[dict] = []
-    for p in content:
-        if p.type == "text":
-            result.append({"type": "text", "text": p.text or ""})
-        elif p.type == "image" and p.source:
-            result.append({"type": "image", "source": p.source})
-    return result
+        return cost_from_pricing(tokens_in, tokens_out, self.input_cost_per_1k, self.output_cost_per_1k)

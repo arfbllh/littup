@@ -1,64 +1,68 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+import os
+from typing import Any
 
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI
-from openai import RateLimitError as OpenAIRateLimitError
-from pydantic import BaseModel
-
-from app.llm.types import (
-    LLMResponse,
-    Message,
-    ProviderUnavailable,
-    RateLimited,
-    SamplingParams,
-    SchemaViolation,
-)
-
-# USD per 1M tokens: (input, output)
-_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-}
-_DEFAULT_PRICING = (2.00, 8.00)
-
-_DEFAULT = SamplingParams()
+from app.llm.errors import ProviderUnavailable, RateLimited, SchemaViolation
+from app.llm.providers.base import LLMProvider, cost_from_pricing, now_ms
+from app.llm.types import LLMResponse, Message, ProviderCapability, SamplingParams
 
 
-class OpenAIProvider:
-    """OpenAI GPT via official SDK. Supports json_schema response_format."""
-
+class OpenAIProvider(LLMProvider):
     def __init__(
         self,
         name: str,
+        *,
         model: str,
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ) -> None:
+        api_key_env: str = "OPENAI_API_KEY",
+        timeout_s: int = 60,
+        input_cost_per_1k: float = 0.005,
+        output_cost_per_1k: float = 0.015,
+        client: Any | None = None,
+    ):
         self.name = name
-        self.capabilities: set[Literal["text", "json", "tools", "vision", "streaming"]] = {
-            "text",
-            "json",
-            "tools",
-            "vision",
-        }
-        self._model = model
-        self._client = AsyncOpenAI(api_key=api_key or "invalid", base_url=base_url)
+        self.model = model
+        self.timeout_s = timeout_s
+        self.input_cost_per_1k = input_cost_per_1k
+        self.output_cost_per_1k = output_cost_per_1k
+        self.capabilities: set[ProviderCapability] = {"text", "json", "tools", "vision"}
+        self._api_key = os.environ.get(api_key_env, "")
+        self._client = client
+        self._available = bool(self._api_key) or client is not None
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+        if not self._api_key:
+            raise ProviderUnavailable(f"openai:{self.name}: api key missing")
+        try:
+            import openai
+        except ImportError as e:
+            raise ProviderUnavailable("openai SDK not installed") from e
+        self._client = openai.AsyncOpenAI(api_key=self._api_key, timeout=self.timeout_s)
+        return self._client
 
     async def generate(
         self,
         messages: list[Message],
         *,
-        schema: type[BaseModel] | None = None,
-        sampling: SamplingParams = _DEFAULT,
+        schema: dict[str, Any] | None = None,
+        sampling: SamplingParams | None = None,
     ) -> LLMResponse:
-        api_messages = [self._fmt(m) for m in messages]
-        kwargs: dict = {
-            "model": self._model,
-            "messages": api_messages,
+        sampling = sampling or SamplingParams()
+        client = self._ensure_client()
+
+        payload_messages = [
+            {
+                "role": m.role,
+                "content": m.content if isinstance(m.content, str) else [p.model_dump() for p in m.content],
+            }
+            for m in messages
+        ]
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": payload_messages,
             "max_tokens": sampling.max_tokens,
             "temperature": sampling.temperature,
             "top_p": sampling.top_p,
@@ -68,69 +72,45 @@ class OpenAIProvider:
         if schema is not None:
             kwargs["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": "output",
-                    "strict": True,
-                    "schema": schema.model_json_schema(),
-                },
+                "json_schema": {"name": "out", "schema": schema, "strict": True},
             }
 
+        t0 = now_ms()
         try:
-            resp = await self._client.chat.completions.create(**kwargs)
-        except OpenAIRateLimitError as e:
-            raise RateLimited(str(e)) from e
-        except APIConnectionError as e:
-            raise ProviderUnavailable(str(e)) from e
-        except APIStatusError as e:
-            raise ProviderUnavailable(f"OpenAI {e.status_code}") from e
+            resp = await client.chat.completions.create(**kwargs)
+        except Exception as e:
+            klass = type(e).__name__
+            if "RateLimit" in klass:
+                raise RateLimited(str(e)) from e
+            raise ProviderUnavailable(f"openai:{self.name}: {e}") from e
 
         choice = resp.choices[0]
-        content = choice.message.content or ""
-        usage = resp.usage
-
-        structured = None
+        text = choice.message.content or ""
+        structured: dict[str, Any] | None = None
         if schema is not None:
             try:
-                structured = json.loads(content)
+                structured = json.loads(text)
             except json.JSONDecodeError as e:
-                raise SchemaViolation(f"OpenAI returned invalid JSON: {e}") from e
+                raise SchemaViolation(f"openai:{self.name}: non-JSON output") from e
 
-        in_tok = usage.prompt_tokens if usage else 0
-        out_tok = usage.completion_tokens if usage else 0
+        usage = getattr(resp, "usage", None)
+        tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
+        tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
 
         return LLMResponse(
-            text=content,
+            text=text,
             structured=structured,
-            model_used=resp.model,
+            model_used=self.model,
             provider=self.name,
-            tokens_in=in_tok,
-            tokens_out=out_tok,
-            cost_usd=self._cost(in_tok, out_tok),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=self.cost_estimate(tokens_in, tokens_out),
+            latency_ms=now_ms() - t0,
             finish_reason=choice.finish_reason or "stop",
         )
 
-    @staticmethod
-    def _fmt(m: Message) -> dict:
-        if isinstance(m.content, str):
-            return {"role": m.role, "content": m.content}
-        parts: list[dict] = []
-        for p in m.content:
-            if p.type == "text":
-                parts.append({"type": "text", "text": p.text or ""})
-            elif p.type == "image" and p.source:
-                parts.append({"type": "image_url", "image_url": {"url": p.source.get("url", "")}})
-        return {"role": m.role, "content": parts}
-
-    def _cost(self, tokens_in: int, tokens_out: int) -> float:
-        in_p, out_p = _PRICING.get(self._model, _DEFAULT_PRICING)
-        return (tokens_in * in_p + tokens_out * out_p) / 1_000_000
-
     async def health(self) -> bool:
-        try:
-            await self._client.models.list()
-            return True
-        except Exception:
-            return False
+        return self._available
 
     def cost_estimate(self, tokens_in: int, tokens_out: int) -> float:
-        return self._cost(tokens_in, tokens_out)
+        return cost_from_pricing(tokens_in, tokens_out, self.input_cost_per_1k, self.output_cost_per_1k)

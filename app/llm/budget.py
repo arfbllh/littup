@@ -2,76 +2,58 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
 
-import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models.llm_log import LLMRequest
 
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-log = structlog.get_logger(__name__)
-
 
 class BudgetTracker:
-    """NN-6: sliding-window spend tracker. Thread-safe via asyncio.Lock."""
+    """Sliding 1-hour USD budget. Protects against runaway hosted spend (NN-6)."""
 
-    def __init__(self, hourly_limit_usd: float, window_seconds: int = 3600) -> None:
-        self._limit = hourly_limit_usd
-        self._window = timedelta(seconds=window_seconds)
-        self._entries: deque[tuple[float, datetime]] = deque()
+    def __init__(self, hourly_usd: float, session_factory: async_sessionmaker | None = None):
+        self.hourly_usd = hourly_usd
+        self._sf = session_factory
+        self._events: deque[tuple[datetime, float]] = deque()
         self._lock = asyncio.Lock()
 
-    async def reload_from_db(self, session: AsyncSession) -> None:
-        from sqlalchemy import select
+    def _prune(self, now: datetime) -> None:
+        cutoff = now - timedelta(hours=1)
+        while self._events and self._events[0][0] < cutoff:
+            self._events.popleft()
 
-        cutoff = datetime.now(UTC) - self._window
-        result = await session.execute(
-            select(LLMRequest.cost_usd, LLMRequest.created_at).where(
-                LLMRequest.created_at >= cutoff,
-                LLMRequest.cost_usd.isnot(None),
-            )
-        )
+    def current_spend(self, now: datetime | None = None) -> float:
+        now = now or datetime.now(timezone.utc)
+        self._prune(now)
+        return sum(c for _, c in self._events)
+
+    def check(self, estimate_usd: float, now: datetime | None = None) -> bool:
+        now = now or datetime.now(timezone.utc)
+        return self.current_spend(now) + estimate_usd <= self.hourly_usd
+
+    async def add(self, cost_usd: float, ts: datetime | None = None) -> None:
         async with self._lock:
-            self._entries.clear()
-            for cost, ts in result:
-                if cost and float(cost) > 0:
-                    aware = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts
-                    self._entries.append((float(cost), aware))
-        log.info(
-            "budget.reloaded",
-            entries=len(self._entries),
-            current_spend=self._spend_unsafe(),
-        )
+            self._events.append((ts or datetime.now(timezone.utc), cost_usd))
+            self._prune(datetime.now(timezone.utc))
 
-    def _prune(self) -> None:
-        cutoff = datetime.now(UTC) - self._window
-        while self._entries and self._entries[0][1] < cutoff:
-            self._entries.popleft()
-
-    def _spend_unsafe(self) -> float:
-        self._prune()
-        return sum(c for c, _ in self._entries)
-
-    async def current_spend(self) -> float:
-        async with self._lock:
-            return self._spend_unsafe()
-
-    async def remaining(self) -> float:
-        async with self._lock:
-            return max(0.0, self._limit - self._spend_unsafe())
-
-    async def add(self, provider: str, cost_usd: float, ts: datetime | None = None) -> None:
-        if cost_usd <= 0:
+    async def prime(self) -> None:
+        """Reload the last hour of spend from llm_log.llm_requests at startup."""
+        if self._sf is None:
             return
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        async with self._sf() as session:
+            rows = (
+                await session.execute(
+                    select(LLMRequest.created_at, LLMRequest.cost_usd).where(
+                        LLMRequest.created_at >= cutoff
+                    )
+                )
+            ).all()
         async with self._lock:
-            self._entries.append((cost_usd, ts or datetime.now(UTC)))
-
-    async def check(self, estimate_usd: float) -> bool:
-        """Return True if the call is within budget. Local ($0) calls always pass."""
-        if estimate_usd <= 0:
-            return True
-        async with self._lock:
-            return self._spend_unsafe() + estimate_usd <= self._limit
+            self._events.clear()
+            for ts, cost in rows:
+                if cost is None:
+                    continue
+                self._events.append((ts, float(cost)))
