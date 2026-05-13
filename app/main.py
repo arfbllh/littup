@@ -37,9 +37,11 @@ def create_app() -> FastAPI:
     application.add_exception_handler(AppError, app_error_handler)
     application.add_exception_handler(Exception, unhandled_error_handler)
 
+    from app.api.routes.admin import router as admin_router
     from app.api.routes.health import router as health_router
 
     application.include_router(health_router)
+    application.include_router(admin_router)
 
     return application
 

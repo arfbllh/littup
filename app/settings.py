@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     VLLM_BASE_URL: str = "http://vllm:8001/v1"
     LLM_HOURLY_BUDGET_USD: float = 5.00
     MAX_VLM_PAGES_PER_DOC: int = 20
+    ROUTER_CONFIG_PATH: str = "config/router.yaml"
 
     # Embeddings
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
