@@ -1,0 +1,4 @@
+; Format: "username" "md5hash_or_plaintext_password"
+; Used when running pgbouncer outside Docker Compose.
+; In Compose the bitnami image handles auth via POSTGRESQL_PASSWORD env var.
+"littup" "littup"

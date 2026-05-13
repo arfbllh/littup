@@ -4,7 +4,19 @@
       "Bash(git checkout *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(uv --version)",
+      "Bash(uv pip *)",
+      "Bash(uv venv *)",
+      "Bash(/Users/arifbillah/Desktop/littup/.venv/bin/pip install *)",
+      "Bash(/Users/arifbillah/Desktop/littup/.venv/bin/python *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(psql -U littup -h localhost -p 5432 -c \"\\\\l\")",
+      "Bash(docker exec littup-postgres-1 *)",
+      "Bash(docker port littup-postgres-1 *)",
+      "Bash(TEST_DATABASE_URL=\"postgresql+asyncpg://littup:littup@localhost:5432/littup_test\" .venv/bin/python *)",
+      "Bash(git log *)"
     ]
   }
 }

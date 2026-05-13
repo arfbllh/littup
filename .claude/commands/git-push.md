@@ -107,19 +107,34 @@ git push -u origin <branch-name>
 
 ---
 
-## Step 7 — Done message
+## Step 7 — Return to main
+
+Run in sequence:
+
+```bash
+git checkout main
+```
+
+```bash
+git pull
+```
+
+```bash
+git branch -d <branch-name>
+```
+
+---
+
+## Step 8 — Done message
 
 Print exactly this (fill in the branch name):
 
 ```
 Branch pushed: <branch-name>
+Switched back to main and deleted local branch.
 
-Next steps:
-  1. Open a PR on GitHub to merge <branch-name> → main
-  2. After merge, delete the remote branch:
-       git push origin --delete <branch-name>
-  3. Clean up locally:
-       git checkout main && git pull && git branch -d <branch-name>
+Next step:
+  Open a PR on GitHub to merge <branch-name> → main
 ```
 
 Do not do anything else after printing this message.

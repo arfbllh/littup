@@ -1,0 +1,76 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: development
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://littup:littup@pgbouncer:5432/littup
+      DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.jobs.worker"]
+    environment:
+      ENV: development
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://littup:littup@pgbouncer:5432/littup
+      DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: littup
+      POSTGRES_PASSWORD: littup
+      POSTGRES_DB: littup
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U littup -d littup"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  pgbouncer:
+    image: bitnami/pgbouncer:latest
+    environment:
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: 5432
+      POSTGRESQL_USERNAME: littup
+      POSTGRESQL_PASSWORD: littup
+      POSTGRESQL_DATABASE: littup
+      PGBOUNCER_DATABASE: littup
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: 200
+      PGBOUNCER_DEFAULT_POOL_SIZE: 20
+      PGBOUNCER_AUTH_TYPE: md5
+    ports:
+      - "6432:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
