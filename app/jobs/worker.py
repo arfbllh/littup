@@ -13,6 +13,7 @@ import signal
 
 import structlog
 
+import app.jobs.handlers  # noqa: F401  — registers handlers into HANDLERS
 from app.core.ids import new_uuid7
 from app.core.logging import setup_logging
 from app.db.session import async_session_factory
@@ -77,10 +78,11 @@ async def _handle_job(job, worker_id: str) -> None:
             logger.info("job_done", job_id=job.id, kind=kind)
         except Exception as exc:
             logger.error("job_handler_error", job_id=job.id, kind=kind, error=str(exc))
+            retryable = getattr(exc, "retryable", True)
             try:
                 async with async_session_factory() as session:
                     q = JobQueue(session)
-                    await q.fail(job.id, str(exc), retryable=True)
+                    await q.fail(job.id, str(exc), retryable=retryable)
                     await session.commit()
             except Exception:
                 pass

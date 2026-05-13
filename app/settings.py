@@ -35,8 +35,13 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 32
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
 
-    # LLM router
-    ROUTER_CONFIG_PATH: str = "config/router.yaml"
+    # Ingestion (M3)
+    MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
+    UPLOAD_DIR: str = "data/uploads"
+    PAGE_IMAGE_DIR: str = "data/page_images"
+    SSE_KEEPALIVE_SECONDS: float = 15.0
+    SSE_POLL_INTERVAL_SECONDS: float = 1.0
+    SSE_MAX_STREAM_SECONDS: float = 600.0
 
 
 settings = Settings()
