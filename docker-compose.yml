@@ -10,6 +10,8 @@ services:
       DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
     env_file:
       - .env
+    volumes:
+      - blob-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,6 +29,8 @@ services:
       DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
     env_file:
       - .env
+    volumes:
+      - blob-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,3 +77,4 @@ services:
 
 volumes:
   postgres-data:
+  blob-data:
