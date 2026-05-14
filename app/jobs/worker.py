@@ -157,10 +157,30 @@ async def _main() -> None:
 
     logger.info("worker_started", worker_id=worker_id)
 
-    await asyncio.gather(
-        _poll_loop(worker_id),
-        _reconcile_loop(),
+    from app.api.deps import get_embedder, get_llm_router, get_template_registry
+    from app.db.session import direct_session_factory as _direct_session_factory
+    from app.jobs.scheduler import RuleExtractorScheduler
+
+    registry = get_template_registry()
+    llm_router = await get_llm_router()
+    embedder = await get_embedder()
+
+    scheduler = RuleExtractorScheduler(
+        session_factory=async_session_factory,
+        lock_session_factory=_direct_session_factory,
+        registry=registry,
+        llm_router=llm_router,
+        embedder=embedder,
     )
+    scheduler.start()
+
+    try:
+        await asyncio.gather(
+            _poll_loop(worker_id),
+            _reconcile_loop(),
+        )
+    finally:
+        scheduler.stop(wait=True)
 
     logger.info("worker_stopped", worker_id=worker_id)
 

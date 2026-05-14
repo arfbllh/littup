@@ -205,6 +205,59 @@ class TemplateRegistry:
         self._cache[cache_key] = template
         return template
 
+    async def append_rules(
+        self,
+        template_id: str,
+        new_rules: list[str],
+        *,
+        session: AsyncSession,
+    ) -> DraftTemplate:
+        """Create a new TemplateVersion with appended_rules extended.
+
+        Dedups new_rules against current appended_rules by exact (post-strip) match.
+        If post-dedup new_rules is empty, returns existing latest unchanged (no INSERT).
+        Recomputes prompt_fingerprint via DraftTemplate.compute_fingerprint().
+        Invalidates self._cache for the template_id on successful INSERT.
+        Does NOT commit; caller owns the transaction.
+        """
+        import json
+
+        current = await self.get_latest(template_id, session=session)
+        existing_set = {r.strip() for r in current.appended_rules}
+        deduped = [r for r in new_rules if r.strip() not in existing_set]
+
+        if not deduped:
+            return current
+
+        merged_rules = list(current.appended_rules) + deduped
+        new_template = current.model_copy(update={"appended_rules": merged_rules})
+        new_fingerprint = new_template.compute_fingerprint()
+
+        new_version = current.version + 1
+        await session.execute(
+            text(
+                "INSERT INTO app.templates "
+                "(template_id, version, yaml_body, system_prompt, appended_rules, prompt_fingerprint) "
+                "VALUES (:tid, :ver, :yaml_body, :system_prompt, CAST(:appended_rules AS jsonb), :fingerprint)"
+            ),
+            {
+                "tid": template_id,
+                "ver": new_version,
+                "yaml_body": yaml.dump(current.model_dump(mode="json")),
+                "system_prompt": current.system_prompt,
+                "appended_rules": json.dumps(merged_rules),
+                "fingerprint": new_fingerprint,
+            },
+        )
+
+        versioned = new_template.model_copy(update={"version": new_version})
+        # Invalidate stale cache entries for this template_id.
+        keys_to_remove = [k for k in self._cache if k[0] == template_id]
+        for k in keys_to_remove:
+            self._cache.pop(k, None)
+        self._cache[(template_id, new_version)] = versioned
+        return versioned
+
     async def list_templates(self, session: AsyncSession) -> list[TemplateInfo]:
         rows = (
             await session.execute(

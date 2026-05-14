@@ -71,3 +71,13 @@ class EditError(AppError):
         retryable: bool = True,
     ):
         super().__init__(message, code=code, status_code=status_code, retryable=retryable)
+
+
+class RuleExtractorBusyError(AppError):
+    def __init__(self, message: str = "Rule extractor is already running"):
+        super().__init__(message, code="RULE_EXTRACTOR_BUSY", status_code=409, retryable=True)
+
+
+class LLMAnalysisFailedError(AppError):
+    def __init__(self, message: str):
+        super().__init__(message, code="LLM_ANALYSIS_FAILED", status_code=502, retryable=True)
