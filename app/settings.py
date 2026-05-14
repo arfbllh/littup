@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
     EMBEDDING_BATCH_SIZE: int = 32
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
+    EMBEDDER_PROVIDER: str = "bge"   # "bge" | "openai"
 
     # Ingestion (M3)
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB

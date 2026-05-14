@@ -245,6 +245,39 @@ async def ocr_ingest_service(db_session, tmp_uploads_dir, cleanup_documents_and_
     return IngestService(db_session)
 
 
+@pytest.fixture(scope="session")
+def m5_fixture_docs():
+    """Generate M5 layout/pipeline fixture PDFs once per session.
+
+    Returns the Path to tests/fixtures/docs/. Skips gracefully if fpdf2 is absent.
+    """
+    from pathlib import Path
+
+    docs_dir = Path(__file__).parent.parent / "fixtures" / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from tests.fixtures.conftest import (
+            _make_corrupt,
+            _make_multi_column,
+            _make_scan_clean,
+            _make_table_heavy,
+        )
+    except ImportError:
+        pytest.skip("tests/fixtures/conftest helpers not importable")
+        return docs_dir
+
+    _make_corrupt()
+    try:
+        _make_scan_clean()
+        _make_multi_column()
+        _make_table_heavy()
+    except Exception as exc:
+        pytest.skip(f"fpdf2 fixture generation failed: {exc}")
+
+    return docs_dir
+
+
 @pytest.fixture
 def sample_pdf_bytes() -> bytes:
     """A tiny PDF whose body bytes vary per test invocation so its SHA256
