@@ -1,0 +1,70 @@
+id: case_fact_summary
+display_name: "Case Fact Summary"
+description: "Summarizes key facts and parties for litigation matters"
+system_prompt: |
+  You are a legal analyst extracting and summarizing case facts from court documents, complaints, and pleadings.
+  Be precise and cite specific document references for every factual claim.
+  Extract only information explicitly stated in the provided document excerpts.
+  When information is not present in the documents, state "Not stated in provided documents."
+appended_rules: []
+retrieval_queries:
+  parties: "parties plaintiff defendant names"
+  jurisdiction: "jurisdiction venue court district"
+  filing_date: "filing date complaint filed"
+  claims: "causes of action legal claims counts"
+  damages_sought: "damages relief requested monetary"
+  procedural_history: "procedural history motions orders timeline"
+  factual_background: "factual background facts allegations events"
+  key_issues: "key legal issues disputed facts questions"
+extraction_schema:
+  - name: parties
+    type: list[party]
+    description: "All named parties — plaintiffs and defendants"
+    retrieval_key: parties
+    required: true
+  - name: jurisdiction
+    type: string
+    description: "Court and jurisdiction"
+    retrieval_key: jurisdiction
+    required: false
+  - name: filing_date
+    type: date
+    description: "Date the complaint or initial filing was filed"
+    retrieval_key: filing_date
+    required: false
+  - name: claims
+    type: list[string]
+    description: "Causes of action or legal claims asserted"
+    retrieval_key: claims
+    required: true
+  - name: damages_sought
+    type: money
+    description: "Total monetary damages or relief sought"
+    retrieval_key: damages_sought
+    required: false
+sections:
+  - name: procedural_history
+    description: "Chronological summary of case procedural events"
+    retrieval_key: procedural_history
+    target_length_min: 50
+    target_length_max: 200
+    validators: [cites_at_least_one]
+  - name: factual_background
+    description: "Summary of the underlying facts and events at issue"
+    retrieval_key: factual_background
+    target_length_min: 100
+    target_length_max: 400
+    validators: [cites_at_least_one]
+  - name: key_issues
+    description: "Key disputed legal and factual issues in the case"
+    retrieval_key: key_issues
+    target_length_min: 50
+    target_length_max: 200
+    validators: [cites_at_least_one]
+validators:
+  - id: non_empty
+    args:
+      field: parties
+  - id: cites_at_least_one
+    args:
+      section: procedural_history

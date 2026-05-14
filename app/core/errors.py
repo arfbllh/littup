@@ -49,3 +49,13 @@ class RateLimitError(AppError):
     def __init__(self, message: str, *, code: str = "RATE_LIMITED", retry_after: int = 60):
         super().__init__(message, code=code, status_code=429)
         self.retry_after = retry_after
+
+
+class DraftError(AppError):
+    def __init__(self, message: str, *, code: str = "DRAFT_ERROR", retryable: bool = False):
+        super().__init__(message, code=code, status_code=422, retryable=retryable)
+
+
+class TemplateNotFoundError(AppError):
+    def __init__(self, message: str):
+        super().__init__(message, code="TEMPLATE_NOT_FOUND", status_code=404, retryable=False)

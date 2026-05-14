@@ -1,0 +1,27 @@
+id: document_checklist
+display_name: "Document Checklist"
+description: "Stub checklist summarizing document completeness"
+system_prompt: |
+  You are a document reviewer checking a set of legal documents for completeness.
+  List what is present and what appears to be missing.
+  Cite specific document references for every item mentioned.
+appended_rules: []
+retrieval_queries:
+  checklist_summary: "document completeness checklist required items"
+extraction_schema: []
+sections:
+  - name: checklist_summary
+    description: "Summary of document completeness and any missing items"
+    retrieval_key: checklist_summary
+    target_length_min: 40
+    target_length_max: 120
+    validators: [cites_at_least_one, length_between]
+validators:
+  - id: length_between
+    args:
+      section: checklist_summary
+      min: 40
+      max: 120
+  - id: cites_at_least_one
+    args:
+      section: checklist_summary

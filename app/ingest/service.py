@@ -7,11 +7,12 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from fastapi import UploadFile
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import IngestError, RateLimitError
@@ -661,7 +662,7 @@ class IngestService:
                 ),
                 {"doc_id": document_id},
             )
-            blocks = block_rows.fetchall()
+            blocks = list(block_rows.fetchall())
 
             chunks = chunk_blocks(document_id, blocks)
 
@@ -788,7 +789,7 @@ class IngestService:
         return {"document_id": document_id, "embedded_count": embedded_count}
 
     async def _claim_chunking_running(self, document_id: str) -> bool:
-        result = await self.session.execute(
+        result = cast(CursorResult, await self.session.execute(
             text(
                 """
                 UPDATE app.documents
@@ -798,11 +799,11 @@ class IngestService:
                 """
             ),
             {"id": document_id},
-        )
+        ))
         return result.rowcount > 0
 
     async def _claim_embedding_running(self, document_id: str) -> bool:
-        result = await self.session.execute(
+        result = cast(CursorResult, await self.session.execute(
             text(
                 """
                 UPDATE app.documents
@@ -812,13 +813,13 @@ class IngestService:
                 """
             ),
             {"id": document_id},
-        )
+        ))
         return result.rowcount > 0
 
     async def _claim_ocr_running(self, document_id: str) -> bool:
         """Atomically transition to ocr_running only if not already in a terminal/active state.
         Returns True if claimed, False if another worker already owns it."""
-        result = await self.session.execute(
+        result = cast(CursorResult, await self.session.execute(
             text(
                 """
                 UPDATE app.documents
@@ -834,7 +835,7 @@ class IngestService:
                 """
             ),
             {"id": document_id},
-        )
+        ))
         return result.rowcount > 0
 
     async def _set_doc_status(self, document_id: str, status: str) -> None:

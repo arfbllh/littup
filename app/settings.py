@@ -58,5 +58,13 @@ class Settings(BaseSettings):
     OCR_PAGE_WORKERS: int = 4       # thread-pool size for per-page OCR
     OCR_RASTER_DPI: int = 300       # dpi used when rasterising PDF pages for OCR
 
+    # Draft Engine (M7)
+    TEMPLATES_DIR: str = "config/templates"
+    DRAFT_EXTRACTION_TOP_K: int = 5
+    DRAFT_SECTION_TOP_K: int = 8
+    DRAFT_SECTION_MAX_TOKENS: int = 1200
+    DRAFT_REGENERATE_TIMEOUT_S: int = 30
+    WORKER_DRAFT_CONCURRENCY: int = 2
+
 
 settings = Settings()

@@ -38,6 +38,8 @@ def _get_semaphore(kind: str) -> asyncio.Semaphore:
             n = settings.WORKER_CONCURRENCY_OCR
         elif kind == JobKind.EMBEDDING:
             n = settings.WORKER_CONCURRENCY_EMBEDDING
+        elif kind == JobKind.DRAFT_GENERATION:
+            n = settings.WORKER_DRAFT_CONCURRENCY
         else:
             n = settings.WORKER_CONCURRENCY_DEFAULT
         _SEMAPHORES[kind] = asyncio.Semaphore(n)
