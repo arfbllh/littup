@@ -6,6 +6,7 @@ tests that depend on the fixtures are skipped.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,114 @@ def _make_corrupt() -> None:
     path.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n" + b"\x00" * 20)
 
 
+def _make_title_review_clean() -> None:
+    path = DOCS_DIR / "title_review_clean.pdf"
+    if path.exists():
+        return
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "COMMITMENT FOR TITLE INSURANCE", ln=True)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", size=11)
+
+    lines = [
+        "Commitment No.: TI-2024-00088",
+        "Effective Date: March 14, 2024",
+        "Property: 42 Maple Street, Albany, NY 12201",
+        "",
+        "SCHEDULE A",
+        "  1. Policy Amount: $400,000",
+        "  2. Proposed Insured: Acme Real Estate Holdings, LLC",
+        "  3. Estate or Interest: Fee Simple",
+        "",
+        "SCHEDULE B-I  Requirements",
+        "  1. Payment of taxes for year 2023 ($6,450.00)",
+        "  2. Execution and recordation of deed from grantor.",
+        "  3. Release of mortgage dated Jan 3, 2020 (City Bank).",
+        "",
+        "SCHEDULE B-II  Exceptions",
+        "  1. Rights of parties in possession.",
+        "  2. Encumbrances or liens not shown by public records.",
+        "  3. Easement along northern boundary — 15 ft. utility corridor.",
+    ]
+    for line in lines:
+        pdf.cell(0, 7, line, ln=True)
+
+    pdf.output(str(path))
+
+
+def _make_title_review_messy() -> None:
+    path = DOCS_DIR / "title_review_messy.pdf"
+    if path.exists():
+        return
+    from fpdf import FPDF
+
+    # Same content as clean but with OCR-noise text (scrambled spacing, mixed case)
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Courier", size=10)
+    lines = [
+        "C0MM1TMENT FOR T1TLE  INSURANCE",
+        "Comm itment No.:  TI-2024-00088",
+        "Effectlve Date: March 14,  2024",
+        "Propert y: 42 Maple  Street,   Albany NY 12201",
+        "",
+        "SCHED ULE A",
+        "  1.  Pol1cy Amount:  $400,000",
+        "  2.  Proposed lnsured:  Acme Real Estate  Holdings LLC",
+        "  3.  Es tate or Interest:  Fee  Simple",
+        "",
+        "SCHEDULE  B-I  Requirem ents",
+        "  1. Payment of taxes  2023  ($6,450.00)",
+        "  2. Deed execution and  recordation.",
+        "  3. Release of mortgage  Jan 3, 2020.",
+    ]
+    for line in lines:
+        # Vary x position to simulate messy left margin
+        x = 10 + (hash(line) % 4)
+        pdf.set_x(x)
+        pdf.cell(0, 8, line, ln=True)
+
+    pdf.output(str(path))
+
+
+def _make_handwriting_excerpt() -> None:
+    path = DOCS_DIR / "handwriting_excerpt.pdf"
+    if path.exists():
+        return
+    from fpdf import FPDF
+
+    # Simulate handwritten note using Courier with irregular spacing
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Courier", size=12)
+
+    lines = [
+        "Dear  Harvey,",
+        "",
+        "  I am writing to confirm our agreement dated",
+        "  September 3, 2025 regarding the Acme matter.",
+        "  The settlement amount of $75,000 was accepted",
+        "  by all parties on January 15, 2026.",
+        "",
+        "  Please file the necessary stipulation with",
+        "  the Southern District of New York.",
+        "",
+        "Sincerely,",
+        "  Louis Litt",
+    ]
+    for i, line in enumerate(lines):
+        # Irregular left margin simulates handwriting drift
+        x = 15 + (i % 3) * 2
+        pdf.set_x(x)
+        pdf.cell(0, 9, line, ln=True)
+
+    pdf.output(str(path))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def generate_fixture_pdfs():
     """Generate synthetic fixture PDFs if not already present. Skips if fpdf2 missing."""
@@ -185,3 +294,6 @@ def generate_fixture_pdfs():
     _make_scan_clean()
     _make_multi_column()
     _make_table_heavy()
+    _make_title_review_clean()
+    _make_title_review_messy()
+    _make_handwriting_excerpt()
