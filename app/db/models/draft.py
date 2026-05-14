@@ -25,6 +25,7 @@ class Draft(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer)
     tokens_out: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6))
+    groundedness_score: Mapped[float | None] = mapped_column(Numeric(4, 3))
     generated_at: Mapped[datetime | None] = mapped_column(TZ)
     edited_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())

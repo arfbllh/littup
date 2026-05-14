@@ -2,15 +2,30 @@
 from __future__ import annotations
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DraftError
 from app.draft.draft_repo import DraftRepo
 from app.draft.extractor import FieldExtractor
 from app.draft.generator import SectionGenerator
 from app.draft.templates.validators import run as run_validators
+from app.draft.validator import CitationValidator, ValidationReport, _apply_report_to_citations
 
 log = structlog.get_logger(__name__)
+
+
+def _section_requires_citations(template, section_name: str) -> bool:
+    """Return True if the section has a cites_at_least_one validator."""
+    sec = next((s for s in template.sections if s.name == section_name), None)
+    if sec and "cites_at_least_one" in sec.validators:
+        return True
+    return any(
+        v.id == "cites_at_least_one" and v.args.get("section") == section_name
+        for v in template.validators
+    )
+
+
+def _gnd(r: ValidationReport) -> float:
+    return (r.supported_count / r.total_claims) if r.total_claims else 0.0
 
 
 class DraftEngine:
@@ -70,7 +85,7 @@ class DraftEngine:
                 template, fields, retrieved, fingerprint, few_shot=[], trace_id=trace_id
             )
 
-            # Step 7: run validators
+            # Step 7: run template validators
             fields_plain = {
                 name: (ext.value if hasattr(ext, "value") else ext)
                 for name, ext in fields.items()
@@ -91,10 +106,66 @@ class DraftEngine:
                 field_chunk_ids=field_chunk_ids,
             )
 
+            # Step 7b — Pass 3: Citation validation
+            chunks_by_id = {
+                chunk.id: chunk
+                for chunks in retrieved.values()
+                for chunk in chunks
+            }
+            validator = CitationValidator(self._router)
+            section_groundedness: dict[str, float | None] = {}
+            total_supported = 0
+            total_claims = 0
+
+            for section in sections:
+                section_cits = [c for c in citations if c.section_name == section.section_name]
+                report = await validator.validate_section(
+                    section.text, section_cits, chunks_by_id, fingerprint, trace_id
+                )
+                needs_retry = (
+                    (report.unsupported_count + report.contradicted_count) > 0
+                    and _section_requires_citations(template, section.section_name)
+                )
+                if needs_retry:
+                    section_spec = next(
+                        s for s in template.sections if s.name == section.section_name
+                    )
+                    suffix = (
+                        f"\n\nYour previous output had "
+                        f"{report.unsupported_count + report.contradicted_count} "
+                        f"unsupported or contradicted claims. Use only the evidence provided. "
+                        f"Cite or remove unsupported statements."
+                    )
+                    retry_section, retry_cits = await generator.generate_section(
+                        section_spec, template, fields, retrieved,
+                        set(chunks_by_id.keys()), trace_id,
+                        extra_instructions=suffix,
+                    )
+                    retry_report = await validator.validate_section(
+                        retry_section.text, retry_cits, chunks_by_id, fingerprint, trace_id
+                    )
+                    if _gnd(retry_report) >= _gnd(report):
+                        idx = sections.index(section)
+                        sections[idx] = retry_section
+                        citations = [
+                            c for c in citations if c.section_name != section.section_name
+                        ] + retry_cits
+                        section_cits, report = retry_cits, retry_report
+
+                _apply_report_to_citations(report, section_cits)
+                section_groundedness[section.section_name] = (
+                    report.supported_count / report.total_claims
+                    if report.total_claims else None
+                )
+                total_supported += report.supported_count
+                total_claims += report.total_claims
+
+            groundedness_score = (total_supported / total_claims) if total_claims else None
+
             # Aggregate model/token stats from all LLM calls
-            tokens_in = extractor.tokens_in + generator.tokens_in
-            tokens_out = extractor.tokens_out + generator.tokens_out
-            cost_usd = extractor.cost_usd + generator.cost_usd
+            tokens_in = extractor.tokens_in + generator.tokens_in + validator.tokens_in
+            tokens_out = extractor.tokens_out + generator.tokens_out + validator.tokens_out
+            cost_usd = extractor.cost_usd + generator.cost_usd + validator.cost_usd
             model_used = generator.model_used if generator.model_used != "unknown" else extractor.model_used
 
         except Exception as exc:
@@ -125,6 +196,8 @@ class DraftEngine:
                 tokens_out=tokens_out,
                 cost_usd=cost_usd,
                 section_target_lengths=section_target_lengths,
+                groundedness_score=groundedness_score,
+                section_groundedness=section_groundedness,
             )
             await session.commit()
 
@@ -159,8 +232,16 @@ class DraftEngine:
                 code="SECTION_NOT_FOUND",
             )
 
+        retrieval_query = template.retrieval_queries.get(section_spec.retrieval_key)
+        if retrieval_query is None:
+            from app.core.errors import NotFoundError
+            raise NotFoundError(
+                f"Retrieval key '{section_spec.retrieval_key}' not in template '{draft.template_id}'",
+                code="RETRIEVAL_KEY_NOT_FOUND",
+            )
+
         retrieved = await self._retriever.multi_retrieve(
-            {section_spec.retrieval_key: template.retrieval_queries[section_spec.retrieval_key]},
+            {section_spec.retrieval_key: retrieval_query},
             list(draft.document_ids or []),
             top_k_per_query=5,
         )
@@ -183,14 +264,26 @@ class DraftEngine:
                 all_chunk_ids.add(chunk.id)
 
         generator = SectionGenerator(self._router)
-        section_draft, new_citations = await generator._generate_section(
+        section_draft, new_citations = await generator.generate_section(
             section_spec, template, fields, retrieved, all_chunk_ids, trace_id
+        )
+
+        # Pass 3 — one-shot; no nested retry in the regenerate path
+        chunks_by_id = {chunk.id: chunk for chunks in retrieved.values() for chunk in chunks}
+        validator = CitationValidator(self._router)
+        report = await validator.validate_section(
+            section_draft.text, new_citations, chunks_by_id, fingerprint, trace_id
+        )
+        _apply_report_to_citations(report, new_citations)
+        section_groundedness_value = (
+            report.supported_count / report.total_claims if report.total_claims else None
         )
 
         async with self._session_factory() as session:
             repo = DraftRepo(session)
             await repo.replace_section(
-                draft_id, section_name, section_draft.text, new_citations
+                draft_id, section_name, section_draft.text, new_citations,
+                section_groundedness=section_groundedness_value,
             )
             await session.commit()
 

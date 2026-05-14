@@ -29,6 +29,8 @@ class CitationDraft:
     chunk_id: str
     claim_span_start: int
     claim_span_end: int
+    validation_status: str = "unchecked"
+    validation_reason: str | None = None
 
 
 class SectionGenerator:
@@ -57,7 +59,7 @@ class SectionGenerator:
         all_citations: list[CitationDraft] = []
 
         for section_spec in template.sections:
-            section_draft, citations = await self._generate_section(
+            section_draft, citations = await self.generate_section(
                 section_spec, template, fields, retrieved, all_chunk_ids, trace_id
             )
             all_sections.append(section_draft)
@@ -65,8 +67,9 @@ class SectionGenerator:
 
         return all_sections, all_citations
 
-    async def _generate_section(
-        self, section_spec, template, fields, retrieved, all_chunk_ids, trace_id
+    async def generate_section(
+        self, section_spec, template, fields, retrieved, all_chunk_ids, trace_id,
+        extra_instructions: str | None = None,
     ) -> tuple[SectionDraft, list[CitationDraft]]:
         chunks = retrieved.get(section_spec.retrieval_key, [])
 
@@ -97,6 +100,8 @@ class SectionGenerator:
             "- Use only the chunk IDs shown in the evidence above.\n"
             "- If evidence is insufficient, write: \"Insufficient evidence in provided documents.\"\n"
         )
+        if extra_instructions:
+            user_content += extra_instructions
         user_msg = Message(role="user", content=user_content)
 
         response = await self._router.generate(

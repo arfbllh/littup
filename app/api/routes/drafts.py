@@ -97,6 +97,8 @@ async def get_draft(
     )
     sections = sections_result.scalars().all()
 
+    sections_groundedness: dict = (draft.ai_output or {}).get("sections_groundedness", {})
+
     section_views: list[SectionView] = []
     for sec in sections:
         cit_result = await session.execute(
@@ -109,6 +111,7 @@ async def get_draft(
                 text=sec.ai_text,
                 target_length_min=sec.target_length_min,
                 target_length_max=sec.target_length_max,
+                groundedness=sections_groundedness.get(sec.name),
                 citations=[
                     CitationView(
                         chunk_id=str(c.chunk_id),
@@ -142,6 +145,7 @@ async def get_draft(
         generated_at=draft.generated_at,
         model_used=draft.model_used,
         cost_usd=float(draft.cost_usd) if draft.cost_usd is not None else None,
+        groundedness_score=float(draft.groundedness_score) if draft.groundedness_score is not None else None,
         error=error_info,
     )
 
@@ -202,13 +206,19 @@ async def regenerate_section(
     cit_result2 = await session.execute(
         select(Citation).where(Citation.section_id == sec.id)
     )
-    citations = cit_result2.scalars().all()
+    citations_updated = cit_result2.scalars().all()
+
+    # Reload draft to get updated groundedness data
+    draft_result2 = await session.execute(select(Draft).where(Draft.id == draft_id))
+    draft_updated = draft_result2.scalar_one()
+    updated_sections_gnd: dict = (draft_updated.ai_output or {}).get("sections_groundedness", {})
 
     return SectionView(
         name=sec.name,
         text=sec.ai_text,
         target_length_min=sec.target_length_min,
         target_length_max=sec.target_length_max,
+        groundedness=updated_sections_gnd.get(section_name),
         citations=[
             CitationView(
                 chunk_id=str(c.chunk_id),
@@ -217,6 +227,6 @@ async def regenerate_section(
                 validation_status=c.validation_status,
                 validation_reason=c.validation_reason,
             )
-            for c in citations
+            for c in citations_updated
         ],
     )

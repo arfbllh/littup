@@ -233,6 +233,18 @@ def ocr_fixture_docs(tmp_path_factory):
     return docs_dir
 
 
+def make_validator_response(statuses: list[str], reasons: list[str | None] | None = None) -> dict:
+    """Build a mock LLM response dict for the citation validator semantic pass."""
+    if reasons is None:
+        reasons = [None] * len(statuses)
+    results = [
+        {"pair_idx": i, "status": s, "reason": r or ""}
+        for i, (s, r) in enumerate(zip(statuses, reasons))
+    ]
+    import json
+    return {"text": json.dumps({"results": results}), "structured": {"results": results}}
+
+
 @pytest_asyncio.fixture
 async def ocr_ingest_service(db_session, tmp_uploads_dir, cleanup_documents_and_jobs):
     """IngestService wired to the test DB.
