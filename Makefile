@@ -51,6 +51,13 @@ reset-db:
 seed:
 	python scripts/seed.py
 
+# ── OCR fixtures & bench ─────────────────────────────────────────────────────
+fixtures:
+	python scripts/generate_fixtures.py
+
+bench-ocr:
+	python scripts/bench_ocr.py
+
 # ── Eval ─────────────────────────────────────────────────────────────────────
 eval:
 	python eval/run_all.py

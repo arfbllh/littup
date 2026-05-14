@@ -71,7 +71,11 @@ def _terminate_stale_backends() -> None:
             await conn.close()
 
     try:
-        asyncio.new_event_loop().run_until_complete(_run())
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
     except Exception:
         # Best-effort — if the admin DB is unreachable we'll surface the
         # underlying wedge via the lock_timeout in cleanup_documents_and_jobs.
@@ -140,6 +144,8 @@ async def cleanup_documents_and_jobs(test_session_factory):
         # Fail fast if a stale backend is holding a conflicting lock instead
         # of hanging forever on AccessExclusiveLock acquisition.
         await s.execute(_sql("SET LOCAL lock_timeout = '5s'"))
+        await s.execute(_sql("TRUNCATE app.spans CASCADE"))
+        await s.execute(_sql("TRUNCATE app.pages CASCADE"))
         await s.execute(_sql("TRUNCATE app.documents CASCADE"))
         await s.execute(_sql("TRUNCATE jobs.jobs CASCADE"))
         await s.execute(_sql("TRUNCATE jobs.job_history CASCADE"))
@@ -193,6 +199,50 @@ async def app_client(
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
+
+
+# ── OCR fixture PDFs ──────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session", autouse=False)
+def ocr_fixture_docs(tmp_path_factory):
+    """Generate OCR test PDFs once per session via scripts/generate_fixtures.py.
+
+    Skips gracefully if reportlab is not installed (dev dep).
+    Returns the directory containing the generated PDFs.
+    """
+    import importlib.util
+    from pathlib import Path as _Path
+
+    pytest.importorskip("reportlab", reason="reportlab not installed; run: pip install -e '.[dev]'")
+
+    docs_dir = tmp_path_factory.mktemp("ocr_docs")
+    root = _Path(__file__).parent.parent.parent  # repo root
+    script = root / "scripts" / "generate_fixtures.py"
+
+    spec = importlib.util.spec_from_file_location("generate_fixtures", str(script))
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    original = gen.FIXTURE_DIR
+    gen.FIXTURE_DIR = docs_dir
+    try:
+        gen.main()
+    finally:
+        gen.FIXTURE_DIR = original
+    return docs_dir
+
+
+@pytest_asyncio.fixture
+async def ocr_ingest_service(db_session, tmp_uploads_dir, cleanup_documents_and_jobs):
+    """IngestService wired to the test DB.
+
+    Note: IngestService commits its own transactions, so db_session.rollback()
+    at teardown does NOT undo those commits. Cleanup relies on the
+    cleanup_documents_and_jobs fixture, which is included here as a dependency.
+    """
+    from app.ingest.service import IngestService
+
+    return IngestService(db_session)
 
 
 @pytest.fixture

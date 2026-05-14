@@ -1,25 +1,35 @@
-"""IngestService — orchestrates upload → atomic upsert → file commit → enqueue."""
+"""IngestService — orchestrates upload → atomic upsert → file commit → enqueue → OCR."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import RateLimitError
+from app.core.errors import IngestError, RateLimitError
 from app.ingest.events import DocumentEventBus, DocumentEventRow
 from app.ingest.hashing import HashedUpload, stream_to_tempfile
-from app.ingest.mime import detect_mime, ext_for
+from app.ingest.mime import PDF, detect_mime, ext_for
 from app.ingest.storage import LocalBlobStore
 from app.jobs.kinds import JobKind
 from app.jobs.queue import JobQueue
 from app.settings import settings
 
+if TYPE_CHECKING:
+    from app.llm.router import LLMRouter
+
 logger = structlog.get_logger(__name__)
+
+# Shared thread pool for CPU-bound OCR steps (classifier, preprocess)
+_OCR_EXECUTOR = ThreadPoolExecutor(max_workers=settings.OCR_PAGE_WORKERS)
 
 
 @dataclass
@@ -80,19 +90,22 @@ class IngestService:
             ext = ext_for(mime)
             filename = upload.filename or f"{hashed.sha256}{ext}"
 
-            doc_id, was_new = await self._atomic_upsert(
+            doc_id, was_new, prev_was_failed = await self._atomic_upsert(
                 sha256=hashed.sha256,
                 filename=filename,
                 mime=mime,
                 size=hashed.size_bytes,
             )
 
-            if was_new:
-                final_path = self.store.path_for(hashed.sha256, ext)
-                self.store.commit(hashed.path, final_path)
-                hashed = HashedUpload(  # tempfile now lives at final_path
-                    path=final_path, sha256=hashed.sha256, size_bytes=hashed.size_bytes
-                )
+            if was_new or prev_was_failed:
+                if was_new:
+                    final_path = self.store.path_for(hashed.sha256, ext)
+                    self.store.commit(hashed.path, final_path)
+                    hashed = HashedUpload(  # tempfile now lives at final_path
+                        path=final_path, sha256=hashed.sha256, size_bytes=hashed.size_bytes
+                    )
+                else:
+                    hashed.path.unlink(missing_ok=True)
                 await DocumentEventBus.emit(
                     self.session,
                     doc_id,
@@ -104,8 +117,9 @@ class IngestService:
                     payload={"document_id": doc_id},
                     dedup_key=f"ocr:{doc_id}",
                 )
+                log_msg = "ingest_uploaded" if was_new else "ingest_requeued_after_failure"
                 logger.info(
-                    "ingest_uploaded",
+                    log_msg,
                     document_id=doc_id,
                     sha256=hashed.sha256,
                     size_bytes=hashed.size_bytes,
@@ -128,30 +142,38 @@ class IngestService:
             document_id=doc_id,
             sha256=hashed.sha256,
             status=status,
-            was_new=was_new,
+            was_new=was_new or prev_was_failed,
         )
 
     async def _atomic_upsert(
         self, *, sha256: str, filename: str, mime: str, size: int
-    ) -> tuple[str, bool]:
-        """NN-2: single statement returning (id, was_new) without races."""
+    ) -> tuple[str, bool, bool]:
+        """NN-2: single statement returning (id, was_new, prev_was_failed)."""
         result = await self.session.execute(
             text(
                 """
+                WITH prev AS (
+                    SELECT status FROM app.documents WHERE sha256 = :sha
+                )
                 INSERT INTO app.documents (sha256, filename, mime_type, size_bytes, status)
                 VALUES (:sha, :name, :mime, :size, 'uploaded')
                 ON CONFLICT (sha256) DO UPDATE
-                   SET last_accessed_at = NOW()
-                RETURNING id, (xmax = 0) AS inserted
+                   SET last_accessed_at = NOW(),
+                       status = CASE
+                                  WHEN app.documents.status = 'failed' THEN 'uploaded'
+                                  ELSE app.documents.status
+                                END,
+                       updated_at = NOW()
+                RETURNING id, (xmax = 0) AS inserted,
+                         COALESCE((SELECT status = 'failed' FROM prev), FALSE) AS prev_was_failed
                 """
             ),
             {"sha": sha256, "name": filename, "mime": mime, "size": size},
         )
         row = result.fetchone()
         if row is None:
-            # Should be impossible — DO UPDATE always returns a row.
             raise RuntimeError("atomic upsert returned no row")
-        return str(row.id), bool(row.inserted)
+        return str(row.id), bool(row.inserted), bool(row.prev_was_failed)
 
     # ── Reads ────────────────────────────────────────────────────────
     async def get_document(self, document_id: str) -> DocumentRecord | None:
@@ -241,3 +263,377 @@ class IngestService:
 
     def upload_path(self, sha256: str, ext: str):
         return self.store.path_for(sha256, ext)
+
+    # ── OCR orchestration (M4) ────────────────────────────────────────────────
+
+    async def ocr_document(
+        self,
+        document_id: str,
+        *,
+        llm_router: "LLMRouter | None" = None,
+        config=None,  # OCRConfig | None — pass in tests to override YAML config
+    ) -> dict[str, Any]:
+        """Drive a document through the OCR state machine.
+
+        Returns a summary dict used as the job result payload.
+        State transitions: ocr_pending → ocr_running → ocr_done (or failed).
+        """
+        from app.ingest.ocr.base import load_ocr_config
+        from app.ingest.ocr.pdfplumber_ocr import has_text_layer
+        from app.ingest.ocr.paddle_ocr import release_paddle
+        from app.ingest.ocr.routing import route_and_extract
+
+        cfg = config if config is not None else load_ocr_config(settings.OCR_CONFIG_PATH)
+
+        # ── Load document record ──────────────────────────────────────────────
+        row = await self.session.execute(
+            text(
+                "SELECT id, sha256, mime_type, status FROM app.documents WHERE id = :id"
+            ),
+            {"id": document_id},
+        )
+        doc = row.fetchone()
+        if doc is None:
+            raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
+
+        if doc.status in ("ocr_done", "ready"):
+            return {"skipped": True, "reason": "already_done"}
+
+        # ── ocr_pending ───────────────────────────────────────────────────────
+        await self._set_doc_status(document_id, "ocr_pending")
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "ocr_pending"}
+        )
+        await self.session.commit()
+
+        # ── Locate file on disk ───────────────────────────────────────────────
+        ext = ext_for(doc.mime_type or PDF)
+        file_path = self.store.path_for(doc.sha256, ext)
+        if not file_path.exists():
+            await self._fail_document(document_id, "FILE_NOT_FOUND", f"Blob missing: {file_path}")
+            await self.session.commit()
+            raise IngestError(f"Uploaded file not found at {file_path}", code="FILE_NOT_FOUND")
+
+        # ── ocr_running ───────────────────────────────────────────────────────
+        claimed = await self._claim_ocr_running(document_id)
+        if not claimed:
+            return {"skipped": True, "reason": "already_claimed"}
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "ocr_running"}
+        )
+        await self.session.commit()
+
+        # ── Determine if this is a native PDF ─────────────────────────────────
+        is_pdf = (doc.mime_type or "").lower() == PDF
+        native = is_pdf and has_text_layer(file_path)
+        is_scan_pdf = is_pdf and not native
+
+        # ── Rasterise pages (scan/image path only; native PDFs skip rasterisation) ─
+        try:
+            page_images = await self._rasterise_pages(file_path, is_pdf=is_pdf, native=native)
+        except Exception as exc:
+            await self._fail_document(document_id, "RASTERISE_ERROR", str(exc))
+            await self.session.commit()
+            raise IngestError(f"Failed to rasterise {file_path}: {exc}", code="RASTERISE_ERROR") from exc
+
+        page_count = len(page_images) if page_images is not None else await self._count_pdf_pages(file_path)
+        await self.session.execute(
+            text("UPDATE app.documents SET page_count = :n WHERE id = :id"),
+            {"n": page_count, "id": document_id},
+        )
+        # Commit page_count so other readers see it immediately (C-6)
+        await self.session.commit()
+
+        # ── Per-page OCR ───────────────────────────────────────────────────────
+        results: list[dict[str, Any]] = []
+        try:
+            for page_num in range(1, page_count + 1):
+                if page_images is not None:
+                    page_img = page_images[page_num - 1]
+                elif is_scan_pdf:
+                    try:
+                        page_img = await self._rasterise_one_page(file_path, page_num)
+                    except Exception as exc:
+                        results.append({"page": page_num, "status": "failed", "error": str(exc)})
+                        continue
+                else:
+                    page_img = None
+                page_result = await self._ocr_one_page(
+                    document_id=document_id,
+                    page_num=page_num,
+                    page_img=page_img,
+                    file_path=file_path,
+                    has_text_layer=native,
+                    cfg=cfg,
+                    llm_router=llm_router,
+                    route_and_extract=route_and_extract,
+                )
+                results.append(page_result)
+        except Exception as exc:
+            await self._fail_document(document_id, "OCR_LOOP_ERROR", str(exc))
+            await self.session.commit()
+            raise IngestError(str(exc), code="OCR_LOOP_ERROR") from exc
+        finally:
+            # Always release PaddleOCR memory regardless of success/failure (B-1)
+            release_paddle()
+
+        # ── ocr_done ──────────────────────────────────────────────────────────
+        await self._set_doc_status(document_id, "ocr_done")
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "ocr_done"}
+        )
+        await self.session.commit()
+
+        total_spans = sum(r.get("span_count", 0) for r in results)
+        vlm_pages = sum(1 for r in results if r.get("source") == "vlm")
+        logger.info(
+            "ocr_document_done",
+            document_id=document_id,
+            page_count=page_count,
+            total_spans=total_spans,
+            vlm_pages=vlm_pages,
+        )
+        return {
+            "document_id": document_id,
+            "page_count": page_count,
+            "total_spans": total_spans,
+            "vlm_pages": vlm_pages,
+            "pages": results,
+        }
+
+    async def _rasterise_pages(self, file_path: Path, *, is_pdf: bool, native: bool = False) -> list | None:
+        """Return a list of numpy arrays, one per page, or None for native/scanned PDFs.
+
+        Native PDFs skip rasterisation entirely — pdfplumber reads the text layer
+        directly, so allocating page images would be wasteful (C-1).
+        Scanned PDFs also return None — caller uses _rasterise_one_page per page
+        to avoid loading all pages into RAM at once (M-1).
+        """
+        if is_pdf and native:
+            return None  # native path; caller uses _count_pdf_pages instead
+
+        if not is_pdf:
+            import cv2
+            img = cv2.imread(str(file_path))
+            if img is None:
+                raise IngestError(f"Cannot read image: {file_path}", code="IMAGE_READ_ERROR")
+            return [img]
+
+        # Scanned PDF: return None — caller uses _rasterise_one_page per page
+        return None
+
+    async def _rasterise_one_page(self, file_path: Path, page_num: int):
+        """Rasterise a single page from a scanned PDF. Frees memory after each call."""
+        try:
+            from pdf2image import convert_from_path
+        except ImportError as exc:
+            raise IngestError("pdf2image not installed", code="PDF2IMAGE_MISSING") from exc
+
+        import numpy as np
+        import cv2
+
+        loop = asyncio.get_running_loop()
+
+        def _convert():
+            pages = convert_from_path(
+                str(file_path),
+                dpi=settings.OCR_RASTER_DPI,
+                first_page=page_num,
+                last_page=page_num,
+            )
+            if not pages:
+                raise IngestError(
+                    f"pdf2image returned no image for page {page_num}", code="RASTERISE_ERROR"
+                )
+            return cv2.cvtColor(np.array(pages[0]), cv2.COLOR_RGB2BGR)
+
+        return await loop.run_in_executor(_OCR_EXECUTOR, _convert)
+
+    async def _count_pdf_pages(self, file_path: Path) -> int:
+        """Count pages in a native PDF without rasterising."""
+        import pdfplumber
+
+        loop = asyncio.get_running_loop()
+
+        def _count() -> int:
+            with pdfplumber.open(str(file_path)) as pdf:
+                return len(pdf.pages)
+
+        return await loop.run_in_executor(_OCR_EXECUTOR, _count)
+
+    async def _ocr_one_page(
+        self,
+        *,
+        document_id: str,
+        page_num: int,
+        page_img,
+        file_path: Path,
+        has_text_layer: bool,
+        cfg,
+        llm_router,
+        route_and_extract,
+    ) -> dict[str, Any]:
+        """OCR a single page and persist spans transactionally."""
+        try:
+            # Insert page row — inside the try so PAGE_CREATE_ERROR is caught (E-1)
+            if page_img is not None:
+                w = float(page_img.shape[1])
+                h = float(page_img.shape[0])
+            else:
+                loop = asyncio.get_running_loop()
+                w, h = await loop.run_in_executor(
+                    _OCR_EXECUTOR, self._get_pdf_page_dimensions, file_path, page_num
+                )
+            page_id_row = await self.session.execute(
+                text(
+                    """
+                    INSERT INTO app.pages (document_id, page_number, width, height, status)
+                    VALUES (:doc_id, :pn, :w, :h, 'ocr_running')
+                    ON CONFLICT DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {"doc_id": document_id, "pn": page_num, "w": w, "h": h},
+            )
+            row = page_id_row.fetchone()
+            if row is None:
+                existing = await self.session.execute(
+                    text("SELECT id FROM app.pages WHERE document_id = :d AND page_number = :p"),
+                    {"d": document_id, "p": page_num},
+                )
+                row = existing.fetchone()
+            if row is None:
+                raise IngestError(
+                    f"Could not create or find page {page_num} for document {document_id}",
+                    code="PAGE_CREATE_ERROR",
+                )
+            page_id = str(row.id)
+
+            extraction = await route_and_extract(
+                page_image=page_img,
+                source_path=file_path,
+                page_num=page_num,
+                has_text_layer=has_text_layer,
+                doc_id=document_id,
+                session=self.session,
+                config=cfg,
+                llm_router=llm_router,
+            )
+        except Exception as exc:
+            # Per-page failure doesn't kill the whole document
+            try:
+                await self.session.execute(
+                    text("UPDATE app.pages SET status = 'ocr_failed' WHERE id = :id"),
+                    {"id": page_id},  # type: ignore[possibly-undefined]
+                )
+            except Exception:
+                pass
+            logger.warning(
+                "ocr_page_failed",
+                document_id=document_id,
+                page=page_num,
+                error=str(exc),
+            )
+            await self.session.commit()
+            return {"page": page_num, "status": "failed", "error": str(exc)}
+
+        # Single bulk INSERT for all spans (M-3)
+        if extraction.spans:
+            span_rows = [
+                {
+                    "page_id": page_id,
+                    "text": s.text,
+                    "x0": s.bbox[0],
+                    "y0": s.bbox[1],
+                    "x1": s.bbox[2],
+                    "y1": s.bbox[3],
+                    "confidence": s.confidence,
+                    "source": s.source,
+                }
+                for s in extraction.spans
+            ]
+            await self.session.execute(
+                text(
+                    """
+                    INSERT INTO app.spans
+                           (page_id, text, bbox_x0, bbox_y0, bbox_x1, bbox_y1, confidence, source)
+                    VALUES (:page_id, :text, :x0, :y0, :x1, :y1, :confidence, :source)
+                    """
+                ),
+                span_rows,
+            )
+
+        page_status = "ocr_done" if extraction.source != "vlm_budget_exceeded" else "vlm_budget_exceeded"
+        await self.session.execute(
+            text("UPDATE app.pages SET status = :s WHERE id = :id"),
+            {"s": page_status, "id": page_id},
+        )
+        await self.session.commit()
+
+        return {
+            "page": page_num,
+            "status": page_status,
+            "span_count": len(extraction.spans),
+            "mean_confidence": round(extraction.mean_confidence, 3),
+            "source": extraction.source,
+        }
+
+    def _get_pdf_page_dimensions(self, file_path: Path, page_num: int) -> tuple[float, float]:
+        """Return (width, height) in points for a native PDF page."""
+        import pdfplumber
+        with pdfplumber.open(str(file_path)) as pdf:
+            if page_num < 1 or page_num > len(pdf.pages):
+                return 612.0, 792.0  # fallback to letter size
+            page = pdf.pages[page_num - 1]
+            return float(page.width or 612.0), float(page.height or 792.0)
+
+    async def _claim_ocr_running(self, document_id: str) -> bool:
+        """Atomically transition to ocr_running only if not already in a terminal/active state.
+        Returns True if claimed, False if another worker already owns it."""
+        result = await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'ocr_running', updated_at = NOW()
+                 WHERE id = :id
+                   AND status NOT IN (
+                       'ocr_running', 'ocr_done',
+                       'layout_running', 'layout_done',
+                       'chunking_running', 'chunking_done',
+                       'embedding_running', 'ready'
+                   )
+                RETURNING id
+                """
+            ),
+            {"id": document_id},
+        )
+        return result.rowcount > 0
+
+    async def _set_doc_status(self, document_id: str, status: str) -> None:
+        await self.session.execute(
+            text(
+                "UPDATE app.documents SET status = :s, updated_at = NOW() WHERE id = :id"
+            ),
+            {"s": status, "id": document_id},
+        )
+
+    async def _fail_document(self, document_id: str, code: str, message: str) -> None:
+        await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'failed',
+                       error_code = :code,
+                       error_message = :msg,
+                       updated_at = NOW()
+                 WHERE id = :id
+                """
+            ),
+            {"id": document_id, "code": code, "msg": message},
+        )
+        await DocumentEventBus.emit(
+            self.session,
+            document_id,
+            "failed",
+            {"error_code": code, "error_message": message},
+        )
