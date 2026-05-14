@@ -40,6 +40,8 @@ def _get_semaphore(kind: str) -> asyncio.Semaphore:
             n = settings.WORKER_CONCURRENCY_EMBEDDING
         elif kind == JobKind.DRAFT_GENERATION:
             n = settings.WORKER_DRAFT_CONCURRENCY
+        elif kind == JobKind.FEW_SHOT_INDEX:
+            n = settings.WORKER_CONCURRENCY_FEW_SHOT
         else:
             n = settings.WORKER_CONCURRENCY_DEFAULT
         _SEMAPHORES[kind] = asyncio.Semaphore(n)
@@ -132,6 +134,7 @@ async def _reconcile_loop() -> None:
                 rec = Reconciler(session)
                 await rec.reclaim_stuck_jobs()
                 await rec.find_partial_documents()
+                await rec.reconcile_unembedded_edits()
                 await session.commit()
         except Exception as exc:
             logger.error("reconcile_error", error=str(exc))

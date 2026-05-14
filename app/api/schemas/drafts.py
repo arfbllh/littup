@@ -47,6 +47,7 @@ class DraftResponse(BaseModel):
     model_used: str | None
     cost_usd: float | None
     groundedness_score: float | None = None
+    edit_count: int = 0
     error: dict[str, Any] | None
 
 

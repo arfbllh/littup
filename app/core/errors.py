@@ -59,3 +59,15 @@ class DraftError(AppError):
 class TemplateNotFoundError(AppError):
     def __init__(self, message: str):
         super().__init__(message, code="TEMPLATE_NOT_FOUND", status_code=404, retryable=False)
+
+
+class EditError(AppError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "EDIT_ERROR",
+        status_code: int = 400,
+        retryable: bool = True,
+    ):
+        super().__init__(message, code=code, status_code=status_code, retryable=retryable)

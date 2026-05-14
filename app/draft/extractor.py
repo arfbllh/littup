@@ -23,8 +23,18 @@ class FieldExtraction:
 
 
 class FieldExtractor:
-    def __init__(self, llm_router) -> None:
+    def __init__(
+        self,
+        llm_router,
+        *,
+        few_shot_store=None,
+        current_template_id: str | None = None,
+        session=None,
+    ) -> None:
         self._router = llm_router
+        self._few_shot_store = few_shot_store
+        self._current_template_id = current_template_id
+        self._session = session
         self.tokens_in: int = 0
         self.tokens_out: int = 0
         self.cost_usd: float = 0.0
@@ -49,11 +59,9 @@ class FieldExtractor:
         if not chunks:
             return FieldExtraction(value=None, supporting_chunk_ids=[], confidence=0.0)
 
-        # Build dynamic Pydantic model for structured output
         DynamicModel = _build_extraction_model(field_spec.type)
         schema = DynamicModel.model_json_schema()
 
-        # Build evidence context
         evidence_lines = []
         for chunk in chunks:
             evidence_lines.append(f"[chunk:{chunk.id}] {chunk.text[:500]}")
@@ -67,13 +75,34 @@ class FieldExtractor:
                 f"Return JSON matching the schema. Use null if not found."
             ),
         )
-        user_msg = Message(
-            role="user",
-            content=(
-                f"Document excerpts:\n{evidence}\n\n"
-                f"Extract '{field_spec.name}' and list the chunk IDs that support your answer."
-            ),
+
+        user_content = (
+            f"Document excerpts:\n{evidence}\n\n"
+            f"Extract '{field_spec.name}' and list the chunk IDs that support your answer."
         )
+
+        # Inject few-shot block if available
+        if (
+            self._few_shot_store is not None
+            and self._session is not None
+            and self._current_template_id is not None
+        ):
+            from app.edits.few_shot_store import chunks_to_context, _render_field_few_shot
+            from app.settings import settings as _settings
+
+            chunk_context = chunks_to_context(chunks)
+            examples = await self._few_shot_store.retrieve(
+                self._current_template_id,
+                field_spec.name,
+                session=self._session,
+                field_type="field",
+                chunk_context=chunk_context,
+                top_k=_settings.FEW_SHOT_TOP_K,
+            )
+            if examples:
+                user_content += "\n\n" + _render_field_few_shot(examples)
+
+        user_msg = Message(role="user", content=user_content)
 
         try:
             response = await self._router.generate(
@@ -88,7 +117,6 @@ class FieldExtractor:
                 value=None, supporting_chunk_ids=[], confidence=0.0, error_code="SCHEMA_VIOLATION"
             )
 
-        # Accumulate cost/token stats from real LLM responses
         ti = getattr(response, 'tokens_in', None)
         to = getattr(response, 'tokens_out', None)
         cu = getattr(response, 'cost_usd', None)
@@ -107,7 +135,6 @@ class FieldExtractor:
         supporting_ids = [str(c) for c in (structured.get("supporting_chunk_ids") or [])]
         confidence = float(structured.get("confidence", 0.8) or 0.8)
 
-        # Substring sanity check for string scalars
         if isinstance(value, str) and value:
             norm_val = _normalize(value)
             found = any(norm_val in _normalize(c.text) for c in chunks)
@@ -134,7 +161,6 @@ def _normalize(text: str) -> str:
 
 
 def _build_extraction_model(field_type: str) -> type[BaseModel]:
-    """Build a Pydantic model for extracting a field of the given type."""
     if field_type == "string":
         value_type = str | None
     elif field_type == "date":
