@@ -1,39 +1,31 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository. For an end-user view of the project, read `README.md`.
 
 ## Project
 
-littup turns messy legal-style PDFs into grounded, template-driven first drafts with inspectable citations, then uses operator edits to improve subsequent drafts. Single-workspace, single-operator demo.
+littup turns messy legal-style PDFs into grounded, template-driven first drafts with inspectable citations, then uses operator edits to improve subsequent drafts. Single-workspace, single-operator system.
 
 Stack: Python 3.11 · FastAPI · Postgres 16 + pgvector · pdfplumber · PaddleOCR · docling · bge-large-en-v1.5 · bge-reranker-base · vLLM (Qwen 2.5) · Anthropic / OpenAI / Gemini SDKs · Next.js 15 (App Router).
 
 ## Commands
 
 ```bash
-make up            # Start full Docker Compose stack (api, worker, postgres, pgbouncer, vllm, ui)
-make test          # Run pytest
-make eval          # Run eval harness (requires running stack + seed data)
+make up            # Start full Docker Compose stack (api, worker, postgres, pgbouncer)
+make dev           # uvicorn app.main:app --reload
+make worker        # python -m app.jobs.worker
+make migrate       # alembic upgrade head
+make reset-db      # Drop and recreate the database, then migrate
 make seed          # Load fixture docs into a running stack
-make reset-db      # Drop and recreate the database
+make test          # pytest tests/unit
+make test-integration
+make test-all      # unit + integration with coverage
+make eval          # Run eval harness → eval/reports/
+make lint          # ruff check
+make fmt           # ruff format + --fix
 
-# Individual services
-docker compose up api
-docker compose up worker
-python -m app.jobs.worker      # Worker process directly
-uvicorn app.main:app --reload  # FastAPI dev mode
-
-# Tests
-pytest tests/unit/
-pytest tests/integration/
-pytest tests/unit/test_classifier.py  # Single file
-pytest -k "test_ingest_idempotency"   # Single test
-
-# Eval
-python eval/run_all.py                # All eval scripts → eval/reports/
-python eval/run_retrieval.py
-python eval/run_citation_validity.py
-python eval/run_edit_improvement.py
+pytest tests/unit/test_classifier.py    # Single file
+pytest -k "test_ingest_idempotency"     # Single test
 ```
 
 ## Architecture
@@ -47,7 +39,7 @@ python eval/run_edit_improvement.py
 | `app/draft/` | Template-driven field extraction + section generation + citation validation |
 | `app/edits/` | Structured diff capture, few-shot store, offline rule extraction |
 | `app/llm/` | Single LLM router over vLLM / Anthropic / OpenAI / Gemini |
-| `app/jobs/` | Postgres-backed job queue + worker process |
+| `app/jobs/` | Postgres-backed job queue + worker process + APScheduler |
 | `app/api/` | Thin FastAPI routes — no business logic |
 | `app/core/` | structlog logging, typed AppError hierarchy, request-ID middleware |
 | `app/db/` | ORM models (one file per aggregate) + Alembic migrations |
@@ -62,7 +54,7 @@ One Postgres 16 + pgvector instance, three schemas:
 - `jobs` — job queue and history (append-heavy, frequent UPDATE)
 - `llm_log` — LLM request log + response cache (append-only, partitioned monthly)
 
-pgbouncer sits in front (transaction-pooling mode). Heavy queries set `work_mem = '64MB'` and `statement_timeout = '5s'` locally.
+pgbouncer sits in front (transaction-pooling mode). Alembic uses `DATABASE_URL_DIRECT` to bypass the pooler for DDL. Heavy queries set `work_mem = '64MB'` and `statement_timeout = '5s'` locally.
 
 ### LLM Router tiers (`app/llm/router.py`)
 
@@ -73,7 +65,7 @@ Routes by task, not vendor. Local-first, hosted as fallback. Config in `config/r
 | `extraction` | Qwen 2.5 14B (JSON mode) | claude-haiku-4-5 |
 | `generation` | Qwen 2.5 32B | claude-sonnet-4-5 |
 | `validation` | Qwen 2.5 7B | claude-haiku-4-5 |
-| `vision` | — (none in v1) | claude-sonnet-4-5 vision |
+| `vision` | — (none locally) | claude-sonnet-4-5 vision |
 | `analysis` | Qwen 2.5 32B | claude-sonnet-4-5 |
 
 `app/llm/` is the **only** place that imports LLM SDK libraries. All other modules call `LLMRouter`.
@@ -95,48 +87,28 @@ Routes by task, not vendor. Local-first, hosted as fallback. Config in `config/r
 
 Documents progress through: `uploaded → ocr_pending → ocr_running → ocr_done → layout_running → layout_done → chunking_running → chunking_done → embedding_running → ready` (or `failed`). Retrieval only queries `status = 'ready'` documents.
 
-## Non-Negotiables
+## Invariants
 
-Read `docs/architecture/10-fixes-and-non-negotiables.md` before any milestone. Every rule is an acceptance criterion.
+These are load-bearing system properties. Preserve them when editing.
 
-| ID | Rule |
-|----|------|
-| NN-1 | Ingestion uses Postgres job queue (not BackgroundTasks); granular state machine; startup reconciler re-queues stuck jobs |
-| NN-2 | Hash idempotency via `INSERT ... ON CONFLICT (sha256) DO UPDATE ... RETURNING (xmax = 0) AS inserted` — atomic, no race |
-| NN-3 | Worker concurrency bounded by `asyncio.Semaphore`; `POST /documents` returns 429 when >100 jobs queued |
-| NN-4 | Three Postgres schemas; pgbouncer in Compose; `SET LOCAL work_mem` for heavy queries; explicit HNSW index params |
-| NN-5 | Template snapshotted once at `generate()` entry; `prompt_fingerprint = sha256(system_prompt + rules + schema + sections)` is the cache/edit-log key |
-| NN-6 | VLM has per-document page cap (`MAX_VLM_PAGES_PER_DOC`) and global hourly USD spend cap |
-| NN-7 | LLM cache key = `sha256(model_id + messages + schema + sampling_params)` — content-addressed |
-| NN-8 | BM25 uses custom `legal_en` Postgres text search config (not default English); tri-gram pass for proper nouns; entity GIN index |
-| NN-9 | Rule extractor has `POST /admin/rule-extractor/run` endpoint + APScheduler cron (every 6h); idempotent |
-| NN-10 | SSE events carry IDs; endpoint honors `Last-Event-ID`; UI falls back to polling every 5s after 30s disconnect |
-| NN-11 | Edits have `few_shot_indexed_at`; reconciliation sweep retries failed embeddings with exponential backoff |
-| NN-12 | structlog JSON to stdout; typed `AppError` hierarchy; `X-Request-ID` header in every request/response; LLM calls logged to `llm_log.llm_requests` |
+1. **Recoverable ingestion.** Background work is a Postgres `jobs` row, not `BackgroundTasks`. Workers claim via `SELECT ... FOR UPDATE SKIP LOCKED` and write heartbeats every 10 s. A startup reconciler reclaims jobs whose heartbeat is older than `JOB_STALE_TIMEOUT` and re-queues partial documents at their missing stage. A periodic sweep runs every 5 minutes.
+2. **Atomic hash idempotency.** `POST /api/documents` does a single `INSERT ... ON CONFLICT (sha256) DO UPDATE ... RETURNING (xmax = 0) AS inserted`. No application-side read-then-write race.
+3. **Bounded concurrency, explicit backpressure.** Worker concurrency is an `asyncio.Semaphore` per job kind. When pending+running jobs exceed `JOB_QUEUE_MAX_PENDING` (default 100), `POST /api/documents` returns `429` with `Retry-After`.
+4. **Three Postgres schemas + pgbouncer.** `app`, `jobs`, `llm_log`. HNSW index has explicit `m=16, ef_construction=64`; `ef_search` is set per-query. `llm_log.llm_requests` is partitioned monthly.
+5. **Template snapshot is immutable per draft.** `DraftEngine.generate()` calls `registry.get_latest()` **once** and threads the snapshot through every sub-step. The `prompt_fingerprint = sha256(system_prompt + appended_rules + extraction_schema + sections)` — not the integer version — is the cache and edit-log identity key.
+6. **VLM spend is capped.** Per-document `MAX_VLM_PAGES_PER_DOC` and global rolling-window `LLM_HOURLY_BUDGET_USD`. Over → typed `BudgetExceededError`; cheap local path unaffected.
+7. **LLM cache is content-addressed.** Key = `sha256(model_id + messages + schema + sampling_params)`. Fully-resolved messages contain the appended rules, so any prompt change busts the cache automatically.
+8. **BM25 is tuned for legal text.** Custom `legal_en` Postgres text-search config (not default English); `pg_trgm` proper-noun fallback; separate entity GIN index folded into RRF.
+9. **Rule extractor is triggered, not hopeful.** APScheduler in the worker runs it every `RULE_EXTRACTOR_INTERVAL_HOURS`; `POST /admin/rule-extractor/run` is the manual trigger. Idempotent — re-running on the same edit set produces the same rule set.
+10. **SSE has a polling fallback.** Every SSE event carries an `id`; the endpoint honours `Last-Event-ID`; the UI falls back to `GET /api/documents/{id}` polling at 5 s intervals after a 30 s disconnect. The status endpoint is the source of truth.
+11. **Few-shot embeddings have a safety net.** Edits have `few_shot_indexed_at`; a reconciliation sweep retries any row with `few_shot_indexed_at IS NULL AND created_at < NOW() - INTERVAL '1 minute'` with exponential backoff.
+12. **Observability is built in.** structlog JSON to stdout; typed `AppError` hierarchy with codes; `X-Request-ID` middleware on every request/response; every LLM call writes to `llm_log.llm_requests`.
 
-## Milestone workflow
+## Key code rules
 
-See `docs/milestones/00-roadmap.md` for the dependency graph and schedule.
-
-For each milestone:
-1. Read: `docs/architecture/00-summary.md`, `docs/architecture/10-fixes-and-non-negotiables.md`, `docs/architecture/project-skeleton.md`, `docs/architecture/02-architecture.md`, the relevant component doc(s), the milestone spec.
-2. Write `PLAN.md` — files touched, acceptance checks, risks. **Do not write code before plan is approved.**
-3. Implement after plan approval.
-4. Write tests listed in the spec.
-5. Write `docs/milestones/M<N>-DONE.md` — what shipped, deviations, follow-ups.
-
-### Sub-agent opportunities
-
-The following milestones have naturally parallel sub-tasks suited for parallel agents:
-- **M2**: one sub-agent per provider (`vllm.py`, `anthropic.py`, `openai.py`, `gemini.py`) — stub configs in `.claude/subagents/m2-llm-providers/`
-- **M4**: one sub-agent per OCR engine (`pdfplumber_ocr.py`, `paddle_ocr.py`, `vlm_ocr.py`, `preprocess.py`) — `.claude/subagents/m4-ocr-engines/`
-- **M11**: one sub-agent per UI screen after `ui/lib/api.ts` is shared — `.claude/subagents/m11-ui-screens/`
-- **M12**: one sub-agent per eval script — `.claude/subagents/m12-eval-scripts/`
-
-## Key invariants
-
-- Routes in `app/api/routes/` parse input, call into service modules, return responses. Nothing else.
+- Routes in `app/api/routes/` parse input, call service modules, return responses. Nothing else.
 - `app/db/models/` is one file per aggregate (`document.py`, `chunk.py`, `draft.py`, `edit.py`, `template.py`, `job.py`, `llm_log.py`).
+- `app/llm/` is the only place that imports vendor LLM SDKs. Everything else uses `LLMRouter`.
 - `config/templates/*.yaml` is config, not code. Adding a new draft type = new YAML file, no new Python.
 - Retrieval never returns chunks from a document whose `status != 'ready'`.
 - The `prompt_fingerprint` (not the integer `template.version`) is what edit logs and the LLM cache use as the template identity key.
