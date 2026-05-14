@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     SSE_POLL_INTERVAL_SECONDS: float = 1.0
     SSE_MAX_STREAM_SECONDS: float = 600.0
 
+    # Retrieval (M6)
+    HNSW_EF_SEARCH: int = 100
+    RETRIEVAL_WORK_MEM: str = "64MB"
+    RETRIEVAL_STATEMENT_TIMEOUT: str = "5s"
+    MAX_CHUNKS_PER_DOC_PER_QUERY: int = 3
+    TRIGRAM_THRESHOLD: float = 0.15
+    RETRIEVER_ALWAYS_TRIGRAM: bool = False
+
     # OCR (M4)
     OCR_CONFIG_PATH: str = "config/ocr.yaml"
     OCR_USE_GPU: bool = False

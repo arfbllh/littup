@@ -135,20 +135,21 @@ def tmp_uploads_dir(tmp_path, monkeypatch):
 
 @pytest_asyncio.fixture
 async def cleanup_documents_and_jobs(test_session_factory):
-    """Truncate app.documents (cascades to events) + jobs.jobs after the test
-    so we don't poison the shared integration DB for sibling test files."""
+    """Delete all test rows from app.documents (cascades to pages/spans/chunks/events)
+    and jobs tables after the test so we don't poison the shared integration DB.
+
+    Uses DELETE instead of TRUNCATE so the teardown holds only ROW EXCLUSIVE locks,
+    which are compatible with the ACCESS SHARE locks held by any still-open db_session
+    SELECT transactions (TRUNCATE needs ACCESS EXCLUSIVE, which conflicts).
+    """
     yield
     from sqlalchemy import text as _sql
 
     async with test_session_factory() as s:
-        # Fail fast if a stale backend is holding a conflicting lock instead
-        # of hanging forever on AccessExclusiveLock acquisition.
-        await s.execute(_sql("SET LOCAL lock_timeout = '5s'"))
-        await s.execute(_sql("TRUNCATE app.spans CASCADE"))
-        await s.execute(_sql("TRUNCATE app.pages CASCADE"))
-        await s.execute(_sql("TRUNCATE app.documents CASCADE"))
-        await s.execute(_sql("TRUNCATE jobs.jobs CASCADE"))
-        await s.execute(_sql("TRUNCATE jobs.job_history CASCADE"))
+        # Delete in FK-safe order; ON DELETE CASCADE handles child rows automatically.
+        await s.execute(_sql("DELETE FROM app.documents"))
+        await s.execute(_sql("DELETE FROM jobs.job_history"))
+        await s.execute(_sql("DELETE FROM jobs.jobs"))
         await s.commit()
 
 
