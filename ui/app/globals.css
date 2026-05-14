@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Paper neutrals */
+  --paper-50: #fbf8f1;
+  --paper-100: #f6f1e7;
+  --paper-200: #ece5d4;
+  --paper-300: #d6cdb8;
+  --paper-400: #a89e87;
+  --paper-500: #6f6757;
+  --paper-600: #4b4538;
+  --paper-700: #2f2b22;
+  --paper-800: #1a1714;
+
+  /* Ochre accent */
+  --ochre-50: #fef6e6;
+  --ochre-100: #fbe5b8;
+  --ochre-400: #c8861f;
+  --ochre-500: #b8741a;
+  --ochre-600: #985f15;
+  --ochre-700: #6f4510;
+
+  /* Citation status — LOCKED */
+  --cite-supported: #2f7a55;
+  --cite-supported-bg: #e3f1ea;
+  --cite-partial: #c08c12;
+  --cite-partial-bg: #fbf0d3;
+  --cite-unsupported: #b1442a;
+  --cite-unsupported-bg: #f6e0d8;
+  --cite-unchecked: #6f6757;
+  --cite-unchecked-bg: #ece5d4;
+
+  /* Status pill tones */
+  --status-pending-fg: #4b4538;
+  --status-pending-bg: #ece5d4;
+  --status-running-fg: #6f4510;
+  --status-running-bg: #fbe5b8;
+  --status-ready-fg: #2f7a55;
+  --status-ready-bg: #e3f1ea;
+  --status-failed-fg: #b1442a;
+  --status-failed-bg: #f6e0d8;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Border radii */
+  --radius-card: 6px;
+  --radius-input: 5px;
+  --radius-pill: 999px;
+
+  /* Font families (populated by next/font in layout) */
+  --font-sans: system-ui, sans-serif;
+  --font-mono: monospace;
+  --font-serif: Georgia, serif;
+}
+
+html {
+  font-size: 14px;
+  background-color: var(--paper-50);
+  color: var(--paper-600);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--paper-50);
+  min-height: 100vh;
+}
+
+/* Prose classes */
+.prose-doc {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--paper-700);
+}
+
+.prose-source {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--paper-600);
+}
+
+.mono-id {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-400);
+}
+
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--paper-400);
+}
+
+/* Animations */
+@keyframes lit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--paper-100);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--paper-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--paper-400);
+}
+
+/* Focus ring utility */
+.focus-ochre:focus {
+  outline: none;
+  border-color: var(--ochre-500);
+  box-shadow: 0 0 0 2px var(--ochre-100);
+}
+
+/* Table base styles */
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--paper-400);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--paper-300);
+  white-space: nowrap;
+}
+
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--paper-200);
+  font-size: 13px;
+  color: var(--paper-600);
+  vertical-align: middle;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+tr:hover td {
+  background-color: var(--paper-100);
+}

@@ -5,13 +5,8 @@ WORKDIR /build
 
 RUN pip install uv
 
-COPY pyproject.toml .
-RUN uv pip install --system --no-cache -e ".[dev]" 2>/dev/null || \
-    uv pip install --system --no-cache \
-        fastapi uvicorn[standard] pydantic pydantic-settings \
-        python-multipart httpx sqlalchemy[asyncio] asyncpg alembic pgvector \
-        structlog uuid7 python-dotenv sse-starlette anthropic openai \
-        pdfplumber Pillow
+COPY requirements.txt .
+RUN uv pip install --system --no-cache -r requirements.txt
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -29,7 +24,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY app/ app/
 COPY config/ config/
 
-RUN chown -R appuser:appuser /app
+RUN mkdir -p /app/data/uploads /app/data/page_images && \
+    chown -R appuser:appuser /app
 
 USER appuser
 
