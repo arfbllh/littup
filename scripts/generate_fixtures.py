@@ -24,6 +24,9 @@ def main() -> None:
     _gen_scan_skewed()
     _gen_multi_column()
     _gen_corrupt()
+    _gen_title_review_clean()
+    _gen_title_review_messy()
+    _gen_handwriting_excerpt()
     print("Fixtures written to", FIXTURE_DIR)
 
 
@@ -190,6 +193,106 @@ def _rasterise_and_repdf(src: Path, dest: Path, *, dpi: int, rotate: float) -> N
             os.unlink(tmp_path)
         c.showPage()
     c.save()
+
+
+# ── Title review (clean) ──────────────────────────────────────────────────────
+
+def _gen_title_review_clean() -> None:
+    dest = FIXTURE_DIR / "title_review_clean.pdf"
+    if dest.exists():
+        return
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(dest), pagesize=letter)
+    w, h = letter
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(72, h - 72, "COMMITMENT FOR TITLE INSURANCE")
+    c.setFont("Helvetica", 11)
+    lines = [
+        "Commitment No.: TI-2024-00088",
+        "Effective Date: March 14, 2024",
+        "Property: 42 Maple Street, Albany, NY 12201",
+        "",
+        "SCHEDULE A",
+        "  1. Policy Amount:  $400,000",
+        "  2. Proposed Insured: Acme Real Estate Holdings, LLC",
+        "  3. Estate or Interest: Fee Simple",
+        "",
+        "SCHEDULE B-I  Requirements",
+        "  1. Payment of taxes for year 2023 ($6,450.00)",
+        "  2. Execution and recordation of deed from grantor.",
+        "  3. Release of mortgage dated Jan 3, 2020 in favor of City Bank.",
+        "",
+        "SCHEDULE B-II  Exceptions",
+        "  1. Rights of parties in possession.",
+        "  2. Encumbrances, liens, or special assessments not shown by public records.",
+        "  3. Easement along northern boundary — 15 ft. utility corridor (Book 221, Page 44).",
+    ]
+    y = h - 108
+    for line in lines:
+        c.drawString(72, y, line)
+        y -= 16
+    c.save()
+    print(f"  wrote {dest.name}")
+
+
+# ── Title review (messy — rotated + noise) ───────────────────────────────────
+
+def _gen_title_review_messy() -> None:
+    dest = FIXTURE_DIR / "title_review_messy.pdf"
+    if dest.exists():
+        return
+    src = FIXTURE_DIR / "title_review_clean.pdf"
+    if not src.exists():
+        _gen_title_review_clean()
+    # Rasterise at lower DPI and add a slight rotation to simulate a poor scan
+    _rasterise_and_repdf(src, dest, dpi=150, rotate=2)
+    print(f"  wrote {dest.name}")
+
+
+# ── Handwriting excerpt (monospace font at a slight angle) ───────────────────
+
+def _gen_handwriting_excerpt() -> None:
+    dest = FIXTURE_DIR / "handwriting_excerpt.pdf"
+    if dest.exists():
+        return
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(dest), pagesize=letter)
+    w, h = letter
+
+    # Simulate cursive-ish writing: Courier at irregular spacing drawn with canvas transforms
+    lines = [
+        "Dear Harvey,",
+        "",
+        "  I am writing to confirm our agreement dated",
+        "  September 3, 2025 regarding the Acme matter.",
+        "  The settlement amount of $75,000 was accepted",
+        "  by all parties on January 15, 2026.",
+        "",
+        "  Please file the necessary stipulation with",
+        "  the Southern District of New York.",
+        "",
+        "Sincerely,",
+        "  Louis Litt",
+    ]
+
+    c.saveState()
+    # Slight skew to simulate handwritten scan
+    c.transform(1, 0, math.tan(math.radians(1.5)), 1, 0, 0)
+    c.setFont("Courier", 12)
+    y = h - 100
+    for line in lines:
+        # Vary x slightly per line for irregular left margin
+        x = 72 + (hash(line) % 5) * 2
+        c.drawString(x, y, line)
+        y -= 20
+    c.restoreState()
+    c.save()
+    print(f"  wrote {dest.name}")
 
 
 if __name__ == "__main__":

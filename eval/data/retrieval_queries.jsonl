@@ -1,0 +1,30 @@
+{"id": "lt1", "query": "section 1983 civil rights liability color of state law", "document_id": "scan_clean", "tag": "legal_term", "expected_chunk_keywords": ["§ 1983"]}
+{"id": "lt2", "query": "Federal Rule of Civil Procedure 56 summary judgment motion", "document_id": "scan_clean", "tag": "legal_term", "expected_chunk_keywords": ["Civil Procedure 56"]}
+{"id": "lt3", "query": "42 USC 1983 deprivation of rights color of state law", "document_id": "multi_column", "tag": "legal_term", "expected_chunk_keywords": ["42 U.S.C. § 1983"]}
+{"id": "lt4", "query": "18 USC 1343 wire fraud statute violation", "document_id": "multi_column", "tag": "legal_term", "expected_chunk_keywords": ["§ 1343"]}
+{"id": "lt5", "query": "Fourteenth Amendment due process deprivation plaintiff rights", "document_id": "scan_clean", "tag": "legal_term", "expected_chunk_keywords": ["Fourteenth Amendment"]}
+{"id": "lt6", "query": "347 US 483 Supreme Court precedent civil rights", "document_id": "scan_clean", "tag": "legal_term", "expected_chunk_keywords": ["347 U.S. 483"]}
+{"id": "pn1", "query": "Harvey Specter attorney plaintiff submits brief", "document_id": "scan_clean", "tag": "proper_noun", "expected_chunk_keywords": ["Harvey Specter"]}
+{"id": "pn2", "query": "Specter v Litt Second Circuit 892 F3d 441", "document_id": "scan_clean", "tag": "proper_noun", "expected_chunk_keywords": ["Specter v. Litt"]}
+{"id": "pn3", "query": "Brown v Board of Education Supreme Court desegregation", "document_id": "scan_clean", "tag": "proper_noun", "expected_chunk_keywords": ["Brown v. Board of Education"]}
+{"id": "pn4", "query": "Southern District of New York federal court complaint", "document_id": "multi_column", "tag": "proper_noun", "expected_chunk_keywords": ["Southern District of New York"]}
+{"id": "pn5", "query": "Second Circuit Court of Appeals 2018 decision holding", "document_id": "scan_clean", "tag": "proper_noun", "expected_chunk_keywords": ["Second Circuit"]}
+{"id": "pn6", "query": "United States District Court federal complaint filing", "document_id": "multi_column", "tag": "proper_noun", "expected_chunk_keywords": ["United States District Court"]}
+{"id": "dt1", "query": "January 15 2026 motion filed date brief submitted", "document_id": "scan_clean", "tag": "date", "expected_chunk_keywords": ["January 15"]}
+{"id": "dt2", "query": "September 3 2025 plaintiff initiated action complaint", "document_id": "multi_column", "tag": "date", "expected_chunk_keywords": ["September 3, 2025"]}
+{"id": "dt3", "query": "2018 Second Circuit ruling court of appeals year", "document_id": "scan_clean", "tag": "date", "expected_chunk_keywords": ["2018"]}
+{"id": "dt4", "query": "1954 Supreme Court landmark decision year", "document_id": "scan_clean", "tag": "date", "expected_chunk_keywords": ["1954"]}
+{"id": "dt5", "query": "2025 civil rights complaint filing Southern District", "document_id": "multi_column", "tag": "date", "expected_chunk_keywords": ["2025"]}
+{"id": "dt6", "query": "2026 summary judgment motion January filing", "document_id": "scan_clean", "tag": "date", "expected_chunk_keywords": ["2026"]}
+{"id": "nm1", "query": "75000 dollars amount in controversy exceeds", "document_id": "scan_clean", "tag": "numeric", "expected_chunk_keywords": ["$75,000"]}
+{"id": "nm2", "query": "500000 punitive damages award schedule", "document_id": "table_heavy", "tag": "numeric", "expected_chunk_keywords": ["500,000"]}
+{"id": "nm3", "query": "1503700 total damages calculation schedule", "document_id": "table_heavy", "tag": "numeric", "expected_chunk_keywords": ["1,503,700"]}
+{"id": "nm4", "query": "1500000 compensatory damages plaintiff seeks recovery", "document_id": "multi_column", "tag": "numeric", "expected_chunk_keywords": ["1,500,000"]}
+{"id": "nm5", "query": "347 US 483 case citation number volume", "document_id": "scan_clean", "tag": "numeric", "expected_chunk_keywords": ["347 U.S. 483"]}
+{"id": "nm6", "query": "892 F3d 441 circuit court citation reporter", "document_id": "scan_clean", "tag": "numeric", "expected_chunk_keywords": ["892 F.3d 441"]}
+{"id": "pr1", "query": "summary judgment motion plaintiff constitutional rights court", "document_id": "scan_clean", "tag": "prose", "expected_chunk_keywords": ["summary judgment"]}
+{"id": "pr2", "query": "deprivation rights color of state law defendant liable damages", "document_id": "scan_clean", "tag": "prose", "expected_chunk_keywords": ["deprived"]}
+{"id": "pr3", "query": "attorneys fees costs damages recovery schedule", "document_id": "table_heavy", "tag": "prose", "expected_chunk_keywords": ["attorneys"]}
+{"id": "pr4", "query": "compensatory damages punitive damages plaintiff seeks injunction", "document_id": "multi_column", "tag": "prose", "expected_chunk_keywords": ["compensatory damages"]}
+{"id": "pr5", "query": "civil rights violations complaint allegation wire fraud", "document_id": "multi_column", "tag": "prose", "expected_chunk_keywords": ["civil rights"]}
+{"id": "pr6", "query": "color of state law constitutional violation liability damages", "document_id": "scan_clean", "tag": "prose", "expected_chunk_keywords": ["color of state law"]}
