@@ -32,6 +32,7 @@ logger = structlog.get_logger(__name__)
 _OCR_EXECUTOR = ThreadPoolExecutor(max_workers=settings.OCR_PAGE_WORKERS)
 
 
+
 @dataclass
 class UploadResult:
     document_id: str
@@ -252,11 +253,35 @@ class IngestService:
         return items, offset + len(items)
 
     async def get_blocks(self, document_id: str) -> dict[str, Any]:
-        """Empty until M5; we still surface the document's status."""
         doc = await self.get_document(document_id)
         if doc is None:
             return {"status": None, "blocks": []}
-        return {"status": doc.status, "blocks": []}
+        result = await self.session.execute(
+            text(
+                """
+                SELECT id, block_type, text, page_start, page_end,
+                       reading_order, bbox_x0, bbox_y0, bbox_x1, bbox_y1, metadata
+                FROM app.blocks
+                WHERE document_id = :doc_id
+                ORDER BY reading_order
+                """
+            ),
+            {"doc_id": document_id},
+        )
+        blocks = [
+            {
+                "id": str(r.id),
+                "block_type": r.block_type,
+                "text": r.text,
+                "page_start": r.page_start,
+                "page_end": r.page_end,
+                "reading_order": r.reading_order,
+                "bbox": [r.bbox_x0, r.bbox_y0, r.bbox_x1, r.bbox_y1],
+                "metadata": r.metadata or {},
+            }
+            for r in result.fetchall()
+        ]
+        return {"status": doc.status, "blocks": blocks}
 
     async def replay_events(self, document_id: str, after_seq: int) -> list[DocumentEventRow]:
         return await DocumentEventBus.replay(self.session, document_id, after_seq)
@@ -586,6 +611,197 @@ class IngestService:
                 return 612.0, 792.0  # fallback to letter size
             page = pdf.pages[page_num - 1]
             return float(page.width or 612.0), float(page.height or 792.0)
+
+    # ── Layout / Chunking / Embedding orchestration (M5) ──────────────────────
+
+    async def parse_layout(self, document_id: str) -> dict[str, Any]:
+        """Drive a document through ocr_done → layout_done.
+
+        layout.parse_layout owns the state machine (claim, transition, emit).
+        This wrapper exists so callers go through the service surface.
+        """
+        from app.ingest.layout import parse_layout as _parse_layout
+
+        return await _parse_layout(document_id, self.session)
+
+    async def chunk_document(self, document_id: str) -> dict[str, Any]:
+        """Drive a document through layout_done → chunking_done."""
+        from app.ingest.chunker import chunk_blocks
+
+        claimed = await self._claim_chunking_running(document_id)
+        if not claimed:
+            return {"skipped": True, "reason": "already_claimed_or_not_ready"}
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "chunking_running"}
+        )
+        await self.session.commit()
+
+        try:
+            block_rows = await self.session.execute(
+                text(
+                    """
+                    SELECT id, block_type, text, page_start, page_end, reading_order,
+                           metadata AS metadata_
+                    FROM app.blocks
+                    WHERE document_id = :doc_id
+                    ORDER BY reading_order
+                    """
+                ),
+                {"doc_id": document_id},
+            )
+            blocks = block_rows.fetchall()
+
+            chunks = chunk_blocks(document_id, blocks)
+
+            if chunks:
+                # Pass Python lists directly — asyncpg infers TEXT[] from column defs.
+                # Using CAST(:x AS text[]) with a PG literal string fails in executemany.
+                rows = [
+                    {
+                        "id": c["id"],
+                        "document_id": c["document_id"],
+                        "text": c["text"],
+                        "token_count": c["token_count"],
+                        "chunk_type": c["chunk_type"],
+                        "section_path": list(c["section_path"]),
+                        "block_ids": list(c["block_ids"]),
+                        "page_start": c["page_start"],
+                        "page_end": c["page_end"],
+                        "char_start": c["char_start"],
+                        "char_end": c["char_end"],
+                        "entities": list(c["entities"]),
+                        "metadata": json.dumps(c.get("metadata") or {}),
+                    }
+                    for c in chunks
+                ]
+                await self.session.execute(
+                    text(
+                        """
+                        INSERT INTO app.chunks
+                               (id, document_id, text, token_count, chunk_type,
+                                section_path, block_ids, page_start, page_end,
+                                char_start, char_end, entities, metadata)
+                        VALUES (:id, :document_id, :text, :token_count, :chunk_type,
+                                :section_path,
+                                :block_ids,
+                                :page_start, :page_end, :char_start, :char_end,
+                                :entities,
+                                CAST(:metadata AS jsonb))
+                        """
+                    ),
+                    rows,
+                )
+
+            await self._set_doc_status(document_id, "chunking_done")
+            await DocumentEventBus.emit(
+                self.session, document_id, "status_changed", {"to": "chunking_done"}
+            )
+            await self.session.commit()
+        except Exception as exc:
+            await self._fail_document(document_id, "CHUNKING_ERROR", str(exc))
+            await self.session.commit()
+            raise
+
+        logger.info(
+            "chunk_document_done", document_id=document_id, chunk_count=len(chunks)
+        )
+        return {"document_id": document_id, "chunk_count": len(chunks)}
+
+    async def embed_chunks(self, document_id: str, embedder) -> dict[str, Any]:
+        """Drive a document through chunking_done → ready.
+
+        Commits after each batch so a crash mid-document resumes correctly (NN-1):
+        only un-embedded chunks are selected on re-entry.
+        """
+        claimed = await self._claim_embedding_running(document_id)
+        if not claimed:
+            return {"skipped": True, "reason": "already_claimed_or_not_ready"}
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "embedding_running"}
+        )
+        await self.session.commit()
+
+        try:
+            result = await self.session.execute(
+                text(
+                    """
+                    SELECT id, text FROM app.chunks
+                    WHERE document_id = :doc_id AND embedding IS NULL
+                    ORDER BY id
+                    """
+                ),
+                {"doc_id": document_id},
+            )
+            chunks = result.fetchall()
+
+            batch_size = settings.EMBEDDING_BATCH_SIZE
+            embedded_count = 0
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i : i + batch_size]
+                vectors = await embedder.embed([c.text for c in batch])
+                for chunk_row, vec in zip(batch, vectors):
+                    vec_str = "[" + ",".join(str(f) for f in vec) + "]"
+                    await self.session.execute(
+                        text(
+                            "UPDATE app.chunks SET embedding = CAST(:v AS vector) "
+                            "WHERE id = :id"
+                        ),
+                        {"v": vec_str, "id": str(chunk_row.id)},
+                    )
+                await self.session.commit()
+                embedded_count += len(batch)
+
+            await self.session.execute(
+                text(
+                    """
+                    UPDATE app.documents
+                       SET status = 'ready', embedded_at = NOW(), updated_at = NOW()
+                     WHERE id = :doc_id
+                    """
+                ),
+                {"doc_id": document_id},
+            )
+            await DocumentEventBus.emit(
+                self.session, document_id, "status_changed", {"to": "ready"}
+            )
+            await self.session.commit()
+        except Exception as exc:
+            await self._fail_document(document_id, "EMBEDDING_ERROR", str(exc))
+            await self.session.commit()
+            raise
+
+        logger.info(
+            "embed_chunks_done", document_id=document_id, embedded_count=embedded_count
+        )
+        return {"document_id": document_id, "embedded_count": embedded_count}
+
+    async def _claim_chunking_running(self, document_id: str) -> bool:
+        result = await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'chunking_running', updated_at = NOW()
+                 WHERE id = :id AND status = 'layout_done'
+                RETURNING id
+                """
+            ),
+            {"id": document_id},
+        )
+        return result.rowcount > 0
+
+    async def _claim_embedding_running(self, document_id: str) -> bool:
+        result = await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'embedding_running', updated_at = NOW()
+                 WHERE id = :id AND status IN ('chunking_done', 'embedding_running')
+                RETURNING id
+                """
+            ),
+            {"id": document_id},
+        )
+        return result.rowcount > 0
 
     async def _claim_ocr_running(self, document_id: str) -> bool:
         """Atomically transition to ocr_running only if not already in a terminal/active state.

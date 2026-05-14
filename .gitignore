@@ -55,3 +55,4 @@ postgres-data/
 .claude/settings.local.json
 
 previous_plans
+.claude/worktree/*
