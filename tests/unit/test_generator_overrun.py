@@ -57,7 +57,7 @@ async def test_section_overrun_triggers_truncation():
     template.appended_rules = []
 
     generator = SectionGenerator(router)
-    section_draft, citations = await generator._generate_section(
+    section_draft, citations = await generator.generate_section(
         section_spec, template, {}, {}, set(), None
     )
 

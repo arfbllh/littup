@@ -31,6 +31,7 @@ class SectionView(BaseModel):
     target_length_min: int | None
     target_length_max: int | None
     citations: list[CitationView]
+    groundedness: float | None = None
 
 
 class DraftResponse(BaseModel):
@@ -45,6 +46,7 @@ class DraftResponse(BaseModel):
     generated_at: datetime | None
     model_used: str | None
     cost_usd: float | None
+    groundedness_score: float | None = None
     error: dict[str, Any] | None
 
 

@@ -1,5 +1,6 @@
 """DraftRepo — CRUD for Draft, Section, Citation aggregates."""
 from __future__ import annotations
+import json
 from datetime import datetime, timezone
 
 import structlog
@@ -60,6 +61,8 @@ class DraftRepo:
         tokens_out: int,
         cost_usd: float,
         section_target_lengths: dict[str, tuple[int, int]] | None = None,
+        groundedness_score: float | None = None,
+        section_groundedness: dict[str, float | None] | None = None,
     ) -> None:
         # Insert Section rows, build name->id map
         section_id_map: dict[str, str] = {}
@@ -86,7 +89,8 @@ class DraftRepo:
                 chunk_id=cit.chunk_id,
                 claim_span_start=cit.claim_span_start,
                 claim_span_end=cit.claim_span_end,
-                validation_status="unchecked",
+                validation_status=getattr(cit, "validation_status", "unchecked"),
+                validation_reason=getattr(cit, "validation_reason", None),
             )
             self._session.add(cit_obj)
 
@@ -116,28 +120,31 @@ class DraftRepo:
             "sections_text": sections_text,
             "validators": validators_data,
             "retrieval_meta": retrieval_meta,
+            "sections_groundedness": section_groundedness or {},
         }
 
         await self._session.execute(
             text(
                 "UPDATE app.drafts SET status='ready', generated_at=:now, "
                 "ai_output=CAST(:ai_output AS jsonb), model_used=:model, "
-                "tokens_in=:ti, tokens_out=:to_, cost_usd=:cost "
+                "tokens_in=:ti, tokens_out=:to_, cost_usd=:cost, "
+                "groundedness_score=:gnd "
                 "WHERE id=:id"
             ),
             {
                 "id": draft_id,
                 "now": datetime.now(timezone.utc),
-                "ai_output": __import__("json").dumps(ai_output),
+                "ai_output": json.dumps(ai_output),
                 "model": model_used,
                 "ti": tokens_in,
                 "to_": tokens_out,
                 "cost": cost_usd,
+                "gnd": groundedness_score,
             },
         )
 
     async def fail(self, draft_id: str, error_code: str, message: str) -> None:
-        ai_output = __import__("json").dumps({"error_code": error_code, "error_message": message})
+        ai_output = json.dumps({"error_code": error_code, "error_message": message})
         await self._session.execute(
             text(
                 "UPDATE app.drafts SET status='failed', "
@@ -161,6 +168,7 @@ class DraftRepo:
         section_name: str,
         new_text: str,
         new_citations: list,
+        section_groundedness: float | None = None,
     ) -> None:
         # Find existing section
         result = await self._session.execute(
@@ -193,8 +201,42 @@ class DraftRepo:
                 chunk_id=cit.chunk_id,
                 claim_span_start=cit.claim_span_start,
                 claim_span_end=cit.claim_span_end,
-                validation_status="unchecked",
+                validation_status=getattr(cit, "validation_status", "unchecked"),
+                validation_reason=getattr(cit, "validation_reason", None),
             )
             self._session.add(cit_obj)
 
         await self._session.flush()
+
+        # Update sections_groundedness and recompute draft groundedness_score
+        if section_groundedness is not None:
+            await self._session.execute(
+                text(
+                    """
+                    UPDATE app.drafts
+                    SET ai_output = jsonb_set(
+                            COALESCE(ai_output, '{}'::jsonb),
+                            '{sections_groundedness}',
+                            COALESCE(ai_output->'sections_groundedness', '{}'::jsonb)
+                            || jsonb_build_object(:section_name::text, :gnd::numeric)
+                        ),
+                        groundedness_score = (
+                            SELECT AVG((val #>> '{}')::numeric)
+                            FROM jsonb_each(
+                                jsonb_set(
+                                    COALESCE(ai_output, '{}'::jsonb)->'sections_groundedness',
+                                    ARRAY[:section_name::text],
+                                    to_jsonb(:gnd::numeric)
+                                )
+                            ) AS kv(key, val)
+                            WHERE jsonb_typeof(val) = 'number'
+                        )
+                    WHERE id = :draft_id
+                    """
+                ),
+                {
+                    "draft_id": draft_id,
+                    "section_name": section_name,
+                    "gnd": section_groundedness,
+                },
+            )
