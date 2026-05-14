@@ -43,5 +43,11 @@ class Settings(BaseSettings):
     SSE_POLL_INTERVAL_SECONDS: float = 1.0
     SSE_MAX_STREAM_SECONDS: float = 600.0
 
+    # OCR (M4)
+    OCR_CONFIG_PATH: str = "config/ocr.yaml"
+    OCR_USE_GPU: bool = False
+    OCR_PAGE_WORKERS: int = 4       # thread-pool size for per-page OCR
+    OCR_RASTER_DPI: int = 300       # dpi used when rasterising PDF pages for OCR
+
 
 settings = Settings()

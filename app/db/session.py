@@ -10,6 +10,9 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
     echo=False,
+    # pgbouncer transaction-pooling mode: server-side prepared statements are
+    # invalidated on every connection rotation → disable the asyncpg cache (B-4)
+    connect_args={"statement_cache_size": 0},
 )
 
 async_session_factory = async_sessionmaker(

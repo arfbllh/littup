@@ -1,0 +1,9 @@
+max_vlm_pages_per_doc: 20
+paddleocr_confidence_threshold: 0.7
+classify:
+  blurry_laplacian_variance_threshold: 100
+  handwriting_stroke_ratio_threshold: 0.35
+preprocess:
+  deskew_max_angle_deg: 15
+  denoise: true
+  binarize: true

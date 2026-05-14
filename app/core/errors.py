@@ -41,8 +41,8 @@ class LLMUnavailableError(AppError):
 
 
 class IngestError(AppError):
-    def __init__(self, message: str, *, code: str = "INGEST_ERROR"):
-        super().__init__(message, code=code, status_code=422)
+    def __init__(self, message: str, *, code: str = "INGEST_ERROR", retryable: bool = True):
+        super().__init__(message, code=code, status_code=422, retryable=retryable)
 
 
 class RateLimitError(AppError):
