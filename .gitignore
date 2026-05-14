@@ -54,6 +54,7 @@ postgres-data/
 # claude settings (contains local paths and commands)
 .claude/settings.local.json
 
-previous_plans
-.claude/worktree/*
+previous_plans/
+.claude/worktrees/
 .PLAN.md
+docs/
