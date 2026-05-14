@@ -15,6 +15,9 @@ __all__ = [
     "reset_embedder_for_tests",
     "get_retriever",
     "reset_retriever_for_tests",
+    "get_template_registry",
+    "reset_template_registry_for_tests",
+    "get_draft_engine",
 ]
 
 _embedder: Embedder | None = None
@@ -56,3 +59,46 @@ async def get_retriever() -> HybridRetriever:
 def reset_retriever_for_tests() -> None:
     global _retriever
     _retriever = None
+
+
+from app.draft.templates.registry import TemplateRegistry  # noqa: E402
+
+_template_registry: TemplateRegistry | None = None
+
+
+def get_template_registry() -> TemplateRegistry:
+    global _template_registry
+    if _template_registry is None:
+        _template_registry = TemplateRegistry()
+    return _template_registry
+
+
+def reset_template_registry_for_tests() -> None:
+    global _template_registry
+    _template_registry = None
+
+
+_draft_engine = None
+
+
+async def get_draft_engine():
+    global _draft_engine
+    if _draft_engine is None:
+        from app.db.session import async_session_factory
+        from app.draft.engine import DraftEngine
+
+        router = await get_llm_router()
+        retriever = await get_retriever()
+        registry = get_template_registry()
+        _draft_engine = DraftEngine(
+            retriever=retriever,
+            llm_router=router,
+            registry=registry,
+            session_factory=async_session_factory,
+        )
+    return _draft_engine
+
+
+def reset_draft_engine_for_tests() -> None:
+    global _draft_engine
+    _draft_engine = None

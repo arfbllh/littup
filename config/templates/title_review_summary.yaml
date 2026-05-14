@@ -1,0 +1,71 @@
+id: title_review_summary
+display_name: "Title Review Summary"
+description: "Summarizes property ownership, encumbrances, and chain of title"
+system_prompt: |
+  You are a real estate title analyst reviewing title reports and deed records.
+  Extract property information accurately, preserving names, dates, and dollar amounts exactly as stated.
+  Present table-shaped data faithfully — list all parties, encumbrances, and liens separately.
+  Cite specific document references for every factual claim.
+  When information is not present in the documents, state "Not stated in provided documents."
+appended_rules: []
+retrieval_queries:
+  property_description: "property address legal description parcel"
+  owners: "owner grantee grantor title holder"
+  encumbrances: "encumbrance restriction covenant easement"
+  liens: "lien mortgage deed of trust judgment"
+  easements: "easement right of way access utility"
+  property_summary: "property description location size"
+  chain_of_title: "chain of title deed transfer conveyance history"
+  encumbrance_summary: "encumbrances liens easements restrictions"
+extraction_schema:
+  - name: property_description
+    type: string
+    description: "Legal description or address of the property"
+    retrieval_key: property_description
+    required: true
+  - name: owners
+    type: list[party]
+    description: "Current and historical owners of record"
+    retrieval_key: owners
+    required: true
+  - name: encumbrances
+    type: list[string]
+    description: "All encumbrances, restrictions, and covenants"
+    retrieval_key: encumbrances
+    required: false
+  - name: liens
+    type: list[string]
+    description: "All liens, mortgages, and deeds of trust"
+    retrieval_key: liens
+    required: false
+  - name: easements
+    type: list[string]
+    description: "All easements and rights-of-way"
+    retrieval_key: easements
+    required: false
+sections:
+  - name: property_summary
+    description: "Overview of the property including location and key characteristics"
+    retrieval_key: property_summary
+    target_length_min: 50
+    target_length_max: 200
+    validators: [cites_at_least_one]
+  - name: chain_of_title
+    description: "Chronological summary of ownership transfers"
+    retrieval_key: chain_of_title
+    target_length_min: 100
+    target_length_max: 400
+    validators: [cites_at_least_one]
+  - name: encumbrance_summary
+    description: "Summary of all encumbrances, liens, and easements affecting the property"
+    retrieval_key: encumbrance_summary
+    target_length_min: 50
+    target_length_max: 300
+    validators: [cites_at_least_one]
+validators:
+  - id: non_empty
+    args:
+      field: owners
+  - id: cites_at_least_one
+    args:
+      field: owners

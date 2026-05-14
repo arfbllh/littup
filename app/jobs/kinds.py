@@ -11,6 +11,7 @@ class JobKind(StrEnum):
     EMBEDDING = "embedding"
     RULE_EXTRACTION = "rule_extraction"
     FEW_SHOT_INDEX = "few_shot_index"
+    DRAFT_GENERATION = "draft_generation"
 
 
 # Handlers registered by each milestone as they are implemented.
