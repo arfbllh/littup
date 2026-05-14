@@ -40,6 +40,7 @@ dependencies = [
     "paddlepaddle>=2.6.0",
     "paddleocr>=2.7.0",
     "opencv-python-headless>=4.9.0",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]

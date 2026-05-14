@@ -104,3 +104,30 @@ async def get_draft_engine():
 def reset_draft_engine_for_tests() -> None:
     global _draft_engine
     _draft_engine = None
+
+
+async def get_rule_extractor(
+    session=None,
+    registry=None,
+    router=None,
+    embedder=None,
+):
+    """Yield a RuleExtractor with both pgbouncer session and direct lock_session."""
+    from app.db.session import direct_session_factory
+    from app.edits.rule_extractor import RuleExtractor
+
+    if registry is None:
+        registry = get_template_registry()
+    if router is None:
+        router = await get_llm_router()
+    if embedder is None:
+        embedder = await get_embedder()
+
+    async with direct_session_factory() as lock_session:
+        yield RuleExtractor(
+            session=session,
+            lock_session=lock_session,
+            registry=registry,
+            llm_router=router,
+            embedder=embedder,
+        )

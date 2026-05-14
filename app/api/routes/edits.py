@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.routes.drafts import _build_draft_response
 from app.api.schemas.drafts import DraftResponse
 from app.api.schemas.edits import EditCreateRequest, EditMetricsResponse
+from app.core.trace import current_trace_id as _current_trace_id
 from app.db.session import get_session
 from app.edits.service import EditService
 from app.jobs.queue import JobQueue
@@ -16,14 +17,6 @@ from app.settings import settings
 router = APIRouter(tags=["edits"])
 
 log = structlog.get_logger(__name__)
-
-
-def _current_trace_id() -> str | None:
-    try:
-        import structlog.contextvars as sv
-        return sv.get_contextvars().get("request_id")
-    except Exception:
-        return None
 
 
 @router.post("/api/drafts/{draft_id}/edit", response_model=DraftResponse)

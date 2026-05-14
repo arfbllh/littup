@@ -5,6 +5,7 @@ from app.db.models.edit import Edit
 from app.db.models.job import Job, JobHistory
 from app.db.models.llm_log import LLMCache, LLMRequest
 from app.db.models.template import TemplateVersion
+from app.db.models.template_extractor_state import TemplateExtractorState  # noqa: F401
 
 __all__ = [
     "Document",
@@ -17,6 +18,7 @@ __all__ = [
     "Citation",
     "Edit",
     "TemplateVersion",
+    "TemplateExtractorState",
     "Job",
     "JobHistory",
     "LLMRequest",
