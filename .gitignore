@@ -56,3 +56,4 @@ postgres-data/
 
 previous_plans
 .claude/worktree/*
+.PLAN.md

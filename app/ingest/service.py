@@ -361,7 +361,12 @@ class IngestService:
             await self.session.commit()
             raise IngestError(f"Failed to rasterise {file_path}: {exc}", code="RASTERISE_ERROR") from exc
 
-        page_count = len(page_images) if page_images is not None else await self._count_pdf_pages(file_path)
+        try:
+            page_count = len(page_images) if page_images is not None else await self._count_pdf_pages(file_path)
+        except Exception as exc:
+            await self._fail_document(document_id, "CORRUPT_PDF", str(exc))
+            await self.session.commit()
+            raise IngestError(str(exc), code="CORRUPT_PDF", retryable=False) from exc
         await self.session.execute(
             text("UPDATE app.documents SET page_count = :n WHERE id = :id"),
             {"n": page_count, "id": document_id},
@@ -499,6 +504,7 @@ class IngestService:
         route_and_extract,
     ) -> dict[str, Any]:
         """OCR a single page and persist spans transactionally."""
+        page_id: str | None = None
         try:
             # Insert page row — inside the try so PAGE_CREATE_ERROR is caught (E-1)
             if page_img is not None:
@@ -546,13 +552,19 @@ class IngestService:
             )
         except Exception as exc:
             # Per-page failure doesn't kill the whole document
-            try:
-                await self.session.execute(
-                    text("UPDATE app.pages SET status = 'ocr_failed' WHERE id = :id"),
-                    {"id": page_id},  # type: ignore[possibly-undefined]
-                )
-            except Exception:
-                pass
+            if page_id is not None:
+                try:
+                    await self.session.execute(
+                        text("UPDATE app.pages SET status = 'ocr_failed' WHERE id = :id"),
+                        {"id": page_id},
+                    )
+                except Exception as update_exc:
+                    logger.warning(
+                        "ocr_page_failed_update_error",
+                        document_id=document_id,
+                        page=page_num,
+                        error=str(update_exc),
+                    )
             logger.warning(
                 "ocr_page_failed",
                 document_id=document_id,
