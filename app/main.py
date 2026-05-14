@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     from app.api.routes.admin import router as admin_router
     from app.api.routes.documents import router as documents_router
     from app.api.routes.drafts import router as drafts_router
+    from app.api.routes.edits import router as edits_router
     from app.api.routes.health import router as health_router
     from app.api.routes.templates import router as templates_router
 
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     application.include_router(admin_router)
     application.include_router(documents_router)
     application.include_router(drafts_router)
+    application.include_router(edits_router)
     application.include_router(templates_router)
 
     return application

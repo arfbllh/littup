@@ -94,7 +94,7 @@ class TemplateRegistry:
                 text(
                     "INSERT INTO app.templates "
                     "(template_id, version, yaml_body, system_prompt, appended_rules, prompt_fingerprint) "
-                    "VALUES (:tid, :ver, :yaml_body, :system_prompt, :appended_rules::jsonb, :fingerprint)"
+                    "VALUES (:tid, :ver, :yaml_body, :system_prompt, CAST(:appended_rules AS jsonb), :fingerprint)"
                 ),
                 {
                     "tid": template.id,

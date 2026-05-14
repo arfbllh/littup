@@ -2,6 +2,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.jobs.kinds import JobKind
 from app.jobs.queue import JobQueue
 from app.settings import settings
 
@@ -70,7 +71,7 @@ class Reconciler:
         return count
 
     async def find_unembedded_edits(self) -> list[str]:
-        """Return edit IDs whose few-shot embedding failed (NN-11). Stub — wired in M9."""
+        """Return edit IDs whose few-shot embedding has not yet been indexed (NN-11)."""
         result = await self._session.execute(
             text("""
                 SELECT id FROM app.edits
@@ -83,3 +84,23 @@ class Reconciler:
         if ids:
             logger.info("reconciler_unembedded_edits", count=len(ids))
         return ids
+
+    async def reconcile_unembedded_edits(self) -> int:
+        """Re-enqueue FEW_SHOT_INDEX jobs for edits that slipped through (NN-11).
+
+        Dedup key matches the primary-path key in EditService.save_edit so the
+        queue's ON CONFLICT DO NOTHING prevents duplicates.
+        """
+        ids = await self.find_unembedded_edits()
+        if not ids:
+            return 0
+        queue = JobQueue(self._session)
+        for edit_id in ids:
+            await queue.enqueue(
+                kind=JobKind.FEW_SHOT_INDEX,
+                payload={"edit_id": edit_id},
+                dedup_key=f"few_shot_index:{edit_id}",
+                max_attempts=settings.FEW_SHOT_INDEX_MAX_ATTEMPTS,
+            )
+        logger.info("reconciler.requeued_unembedded_edits", count=len(ids))
+        return len(ids)

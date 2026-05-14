@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import DraftError
 from app.draft.draft_repo import DraftRepo
@@ -14,7 +15,6 @@ log = structlog.get_logger(__name__)
 
 
 def _section_requires_citations(template, section_name: str) -> bool:
-    """Return True if the section has a cites_at_least_one validator."""
     sec = next((s for s in template.sections if s.name == section_name), None)
     if sec and "cites_at_least_one" in sec.validators:
         return True
@@ -29,11 +29,29 @@ def _gnd(r: ValidationReport) -> float:
 
 
 class DraftEngine:
-    def __init__(self, retriever, llm_router, registry, session_factory) -> None:
+    def __init__(
+        self,
+        retriever,
+        llm_router,
+        registry,
+        session_factory,
+        embedder=None,
+    ) -> None:
         self._retriever = retriever
         self._router = llm_router
         self._registry = registry
         self._session_factory = session_factory
+        self._embedder = embedder
+
+        # Build FewShotStore once at construction — dim check happens here, not per-request.
+        self._few_shot_store = None
+        if embedder is not None:
+            from app.edits.few_shot_store import FewShotStore
+            from app.core.errors import EditError
+            try:
+                self._few_shot_store = FewShotStore(embedder=embedder)
+            except EditError:
+                log.warning("draft_engine.few_shot_disabled_dim_mismatch", embedder_dim=embedder.dim)
 
     async def generate(
         self,
@@ -43,7 +61,6 @@ class DraftEngine:
         trace_id: str | None,
     ) -> None:
         async with self._session_factory() as session:
-            # NN-5: snapshot template exactly once at generate() entry
             template = await self._registry.get_latest(template_id, session)
 
         fingerprint = template.compute_fingerprint()
@@ -65,7 +82,6 @@ class DraftEngine:
             await session.commit()
 
         try:
-            # Step 4: retrieve chunks for all query keys
             all_queries = {**template.retrieval_queries}
             retrieved = await self._retriever.multi_retrieve(
                 all_queries,
@@ -73,19 +89,29 @@ class DraftEngine:
                 top_k_per_query=5,
             )
 
-            # Step 5: field extraction (Pass 1)
-            extractor = FieldExtractor(self._router)
-            fields = await extractor.extract_all(
-                template, retrieved, fingerprint, trace_id
-            )
+            # Open a dedicated session for the generation phase so extractor/generator
+            # can do few-shot retrieval without opening additional sessions inside the LLM calls.
+            async with self._session_factory() as gen_session:
+                extractor = FieldExtractor(
+                    self._router,
+                    few_shot_store=self._few_shot_store,
+                    current_template_id=template_id,
+                    session=gen_session,
+                )
+                fields = await extractor.extract_all(
+                    template, retrieved, fingerprint, trace_id
+                )
 
-            # Step 6: section generation (Pass 2)
-            generator = SectionGenerator(self._router)
-            sections, citations = await generator.generate_all(
-                template, fields, retrieved, fingerprint, few_shot=[], trace_id=trace_id
-            )
+                generator = SectionGenerator(
+                    self._router,
+                    few_shot_store=self._few_shot_store,
+                    current_template_id=template_id,
+                    session=gen_session,
+                )
+                sections, citations = await generator.generate_all(
+                    template, fields, retrieved, fingerprint, trace_id=trace_id
+                )
 
-            # Step 7: run template validators
             fields_plain = {
                 name: (ext.value if hasattr(ext, "value") else ext)
                 for name, ext in fields.items()
@@ -106,7 +132,6 @@ class DraftEngine:
                 field_chunk_ids=field_chunk_ids,
             )
 
-            # Step 7b — Pass 3: Citation validation
             chunks_by_id = {
                 chunk.id: chunk
                 for chunks in retrieved.values()
@@ -136,11 +161,19 @@ class DraftEngine:
                         f"unsupported or contradicted claims. Use only the evidence provided. "
                         f"Cite or remove unsupported statements."
                     )
-                    retry_section, retry_cits = await generator.generate_section(
-                        section_spec, template, fields, retrieved,
-                        set(chunks_by_id.keys()), trace_id,
-                        extra_instructions=suffix,
-                    )
+                    # Retry uses the same gen_session, but it's closed. Open a new one.
+                    async with self._session_factory() as retry_session:
+                        retry_gen = SectionGenerator(
+                            self._router,
+                            few_shot_store=self._few_shot_store,
+                            current_template_id=template_id,
+                            session=retry_session,
+                        )
+                        retry_section, retry_cits = await retry_gen.generate_section(
+                            section_spec, template, fields, retrieved,
+                            set(chunks_by_id.keys()), trace_id,
+                            extra_instructions=suffix,
+                        )
                     retry_report = await validator.validate_section(
                         retry_section.text, retry_cits, chunks_by_id, fingerprint, trace_id
                     )
@@ -162,7 +195,6 @@ class DraftEngine:
 
             groundedness_score = (total_supported / total_claims) if total_claims else None
 
-            # Aggregate model/token stats from all LLM calls
             tokens_in = extractor.tokens_in + generator.tokens_in + validator.tokens_in
             tokens_out = extractor.tokens_out + generator.tokens_out + validator.tokens_out
             cost_usd = extractor.cost_usd + generator.cost_usd + validator.cost_usd
@@ -176,13 +208,11 @@ class DraftEngine:
             log.error("draft.generation_failed", draft_id=draft_id, error=str(exc))
             raise DraftError(str(exc), code="DRAFT_GENERATION_ERROR") from exc
 
-        # Build section target lengths from template spec
         section_target_lengths = {
             s.name: (s.target_length_min, s.target_length_max)
             for s in template.sections
         }
 
-        # Step 8: persist
         async with self._session_factory() as session:
             repo = DraftRepo(session)
             await repo.finalize(
@@ -208,20 +238,20 @@ class DraftEngine:
         draft_id: str,
         section_name: str,
         trace_id: str | None,
+        *,
+        session: AsyncSession | None = None,
     ) -> None:
-        async with self._session_factory() as session:
-            repo = DraftRepo(session)
+        async with self._session_factory() as _s:
+            repo = DraftRepo(_s)
             draft = await repo.get(draft_id)
 
-        # Pin to original template version (NN-5 across regeneration)
-        async with self._session_factory() as session:
+        async with self._session_factory() as _s:
             template = await self._registry.get_by_version(
-                draft.template_id, draft.template_version, session
+                draft.template_id, draft.template_version, _s
             )
 
         fingerprint = template.compute_fingerprint()
 
-        # Find the section spec
         section_spec = next(
             (s for s in template.sections if s.name == section_name), None
         )
@@ -246,7 +276,6 @@ class DraftEngine:
             top_k_per_query=5,
         )
 
-        # Rebuild fields summary from stored ai_output
         fields: dict = {}
         if draft.ai_output and "fields" in draft.ai_output:
             from app.draft.extractor import FieldExtraction
@@ -263,12 +292,22 @@ class DraftEngine:
             for chunk in chunks:
                 all_chunk_ids.add(chunk.id)
 
-        generator = SectionGenerator(self._router)
-        section_draft, new_citations = await generator.generate_section(
-            section_spec, template, fields, retrieved, all_chunk_ids, trace_id
+        # Use passed-in session for few-shot retrieval if available, else open dedicated one
+        regen_session_ctx = (
+            _nullctx(session) if session is not None
+            else self._session_factory()
         )
+        async with regen_session_ctx as regen_session:
+            generator = SectionGenerator(
+                self._router,
+                few_shot_store=self._few_shot_store,
+                current_template_id=draft.template_id,
+                session=regen_session,
+            )
+            section_draft, new_citations = await generator.generate_section(
+                section_spec, template, fields, retrieved, all_chunk_ids, trace_id
+            )
 
-        # Pass 3 — one-shot; no nested retry in the regenerate path
         chunks_by_id = {chunk.id: chunk for chunks in retrieved.values() for chunk in chunks}
         validator = CitationValidator(self._router)
         report = await validator.validate_section(
@@ -279,12 +318,25 @@ class DraftEngine:
             report.supported_count / report.total_claims if report.total_claims else None
         )
 
-        async with self._session_factory() as session:
-            repo = DraftRepo(session)
+        async with self._session_factory() as _s:
+            repo = DraftRepo(_s)
             await repo.replace_section(
                 draft_id, section_name, section_draft.text, new_citations,
                 section_groundedness=section_groundedness_value,
             )
-            await session.commit()
+            await _s.commit()
 
         log.info("draft.section_regenerated", draft_id=draft_id, section=section_name)
+
+
+class _nullctx:
+    """Trivial async context manager that yields an already-open session."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> AsyncSession:
+        return self._session
+
+    async def __aexit__(self, *_) -> None:
+        pass

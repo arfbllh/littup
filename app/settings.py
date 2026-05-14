@@ -66,5 +66,11 @@ class Settings(BaseSettings):
     DRAFT_REGENERATE_TIMEOUT_S: int = 30
     WORKER_DRAFT_CONCURRENCY: int = 2
 
+    # Edit Capture + Few-shot Store (M9)
+    WORKER_CONCURRENCY_FEW_SHOT: int = 4
+    FEW_SHOT_TOP_K: int = 3
+    FEW_SHOT_INDEX_MAX_ATTEMPTS: int = 5
+    EDIT_METRICS_DEFAULT_DAYS: int = 30
+
 
 settings = Settings()

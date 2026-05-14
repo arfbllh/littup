@@ -154,6 +154,19 @@ async def cleanup_documents_and_jobs(test_session_factory):
 
 
 @pytest_asyncio.fixture
+async def cleanup_drafts_and_jobs(test_session_factory):
+    """Delete all drafts (cascades to sections, citations, edits) and jobs."""
+    yield
+    from sqlalchemy import text as _sql
+
+    async with test_session_factory() as s:
+        await s.execute(_sql("DELETE FROM app.drafts"))
+        await s.execute(_sql("DELETE FROM jobs.job_history"))
+        await s.execute(_sql("DELETE FROM jobs.jobs"))
+        await s.commit()
+
+
+@pytest_asyncio.fixture
 async def app_client(
     db_engine, test_session_factory, tmp_uploads_dir, cleanup_documents_and_jobs, monkeypatch
 ):

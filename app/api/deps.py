@@ -90,11 +90,13 @@ async def get_draft_engine():
         router = await get_llm_router()
         retriever = await get_retriever()
         registry = get_template_registry()
+        embedder = await get_embedder()
         _draft_engine = DraftEngine(
             retriever=retriever,
             llm_router=router,
             registry=registry,
             session_factory=async_session_factory,
+            embedder=embedder,
         )
     return _draft_engine
 

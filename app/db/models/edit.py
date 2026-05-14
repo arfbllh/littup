@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import TIMESTAMP, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -26,7 +27,7 @@ class Edit(Base):
     user_value: Mapped[dict | None] = mapped_column(JSONB)
     diff: Mapped[dict | None] = mapped_column(JSONB)
     context: Mapped[dict | None] = mapped_column(JSONB)
-    embedding: Mapped[bytes | None] = mapped_column()  # actual DDL type is VECTOR(1024)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
     few_shot_indexed_at: Mapped[datetime | None] = mapped_column(TZ)  # NN-11: NULL until indexed
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
 
