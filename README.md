@@ -68,7 +68,6 @@ The router skips any provider whose env is missing or empty and falls over to th
 ```bash
 make up          # docker compose up --build -d   (api, worker, postgres, pgbouncer)
 make migrate     # alembic upgrade head
-make seed        # optional — loads samples/henderson_v_meridian/source_docs/*
 
 curl http://localhost:8000/healthz
 # {"status":"ok"}
@@ -462,7 +461,7 @@ littup/
 ├── docker/postgres/          # Postgres init scripts (extensions, custom FTS config)
 ├── eval/                     # Offline harness (retrieval, citations, edit improvement)
 ├── samples/                  # Worked sample with ground-truth fixtures
-├── scripts/                  # seed, reset_db, bench_ocr, fixture generators
+├── scripts/                  # bench_ocr, fixture generators, edit synthesis
 ├── tests/
 │   ├── unit/                 # No external services
 │   └── integration/          # Requires running Postgres

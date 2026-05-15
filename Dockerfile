@@ -83,19 +83,7 @@ USER appuser
 # IMPORTANT: this RUN sits *before* COPY app/ and COPY config/ so that editing
 # Python source or YAML templates does NOT invalidate the bake cache. It only
 # busts when requirements.txt (and therefore site-packages) changes.
-# HF_TOKEN is mounted as a BuildKit secret (id=hf_token, sourced from the
-# HF_TOKEN env on the host) — available only during this RUN, never written
-# to any image layer. Anonymous downloads work but are rate-limited; an
-# authenticated token gives ~5× higher throughput from the HF CDN.
-#
-# Build with auth:
-#   export $(grep '^HF_TOKEN=' .env | xargs)
-#   DOCKER_BUILDKIT=1 docker compose build --secret id=hf_token,env=HF_TOKEN worker api
-# Build without auth (slower):
-#   docker compose build worker api
-RUN --mount=type=secret,id=hf_token,required=false \
-    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
-    python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
     SentenceTransformer('BAAI/bge-large-en-v1.5'); \
     CrossEncoder('BAAI/bge-reranker-base')"
 
@@ -103,6 +91,7 @@ RUN --mount=type=secret,id=hf_token,required=false \
 # above. --chown ensures appuser owns the files since we've already USER-switched.
 COPY --chown=appuser:appuser app/ app/
 COPY --chown=appuser:appuser config/ config/
+COPY --chown=appuser:appuser alembic.ini ./
 
 EXPOSE 8000
 

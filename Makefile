@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint fmt migrate reset-db seed eval
+.PHONY: up down logs test lint fmt migrate reset-db eval
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 up:
@@ -48,9 +48,6 @@ reset-db:
 	docker compose exec -T postgres psql -U littup -d postgres -c "CREATE DATABASE littup;"
 	alembic upgrade head
 
-# ── Data ─────────────────────────────────────────────────────────────────────
-seed:
-	python scripts/seed.py
 
 # ── OCR fixtures & bench ─────────────────────────────────────────────────────
 fixtures:

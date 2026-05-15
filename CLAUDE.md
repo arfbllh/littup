@@ -16,7 +16,6 @@ make dev           # uvicorn app.main:app --reload
 make worker        # python -m app.jobs.worker
 make migrate       # alembic upgrade head
 make reset-db      # Drop and recreate the database, then migrate
-make seed          # Load fixture docs into a running stack
 make test          # pytest tests/unit
 make test-integration
 make test-all      # unit + integration with coverage
