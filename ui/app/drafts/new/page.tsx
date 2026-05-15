@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
 import { FileText } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
@@ -11,15 +11,44 @@ import { Spinner } from '@/components/ui/spinner';
 import { listTemplates, listDocuments, createDraft } from '@/lib/api';
 import type { TemplateInfo, DocumentSummary } from '@/lib/types';
 
+const EXTRA_INSTRUCTIONS_MAX = 2000;
+
 export default function NewDraftPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
+  const [extraInstructions, setExtraInstructions] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // WS-F.5: prefill from "Regenerate with changes" on an existing draft.
+  // We only prefill once on mount — the user is free to mutate from there.
+  useEffect(() => {
+    const tpl = searchParams.get('template_id');
+    const docs = searchParams.get('document_ids');
+    const extra = searchParams.get('extra_instructions');
+    if (tpl) setSelectedTemplate(tpl);
+    if (docs) setSelectedDocs(new Set(docs.split(',').filter(Boolean)));
+    if (extra) setExtraInstructions(extra.slice(0, EXTRA_INSTRUCTIONS_MAX));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const { data: templates, isLoading: templatesLoading } = useSWR('templates', listTemplates);
-  const { data: docsData, isLoading: docsLoading } = useSWR('documents', () => listDocuments());
+  const { data: docsData, isLoading: docsLoading } = useSWR(
+    'documents',
+    () => listDocuments(),
+    {
+      // Same cadence as the documents page so the picker doesn't lag behind
+      // when a doc finishes processing.
+      refreshInterval: (latest) => {
+        const anyActive = (latest?.items ?? []).some(
+          (d) => d.status !== 'ready' && d.status !== 'failed'
+        );
+        return anyActive ? 2_000 : 10_000;
+      },
+    }
+  );
   const readyDocs = (docsData?.items ?? []).filter((d) => d.status === 'ready');
 
   function toggleDoc(id: string) {
@@ -36,9 +65,11 @@ export default function NewDraftPage() {
     setIsGenerating(true);
     setError(null);
     try {
+      const trimmed = extraInstructions.trim();
       const result = await createDraft({
         template_id: selectedTemplate,
         document_ids: Array.from(selectedDocs),
+        extra_instructions: trimmed.length > 0 ? trimmed : null,
       });
       router.push(`/drafts/${result.draft_id}`);
     } catch (err) {
@@ -256,6 +287,51 @@ export default function NewDraftPage() {
               })}
             </div>
           )}
+        </div>
+
+        {/* Custom instructions */}
+        <div>
+          <div className="eyebrow" style={{ marginBottom: '12px' }}>
+            3. Custom instructions <span style={{ color: 'var(--paper-400)', textTransform: 'none' }}>(optional)</span>
+          </div>
+          <textarea
+            value={extraInstructions}
+            onChange={(e) => setExtraInstructions(e.target.value.slice(0, EXTRA_INSTRUCTIONS_MAX))}
+            placeholder="Focus on the indemnification clause and ignore Schedule B…"
+            disabled={isGenerating}
+            style={{
+              width: '100%',
+              minHeight: '90px',
+              padding: '10px 12px',
+              fontFamily: 'var(--font-sans)',
+              fontSize: '13px',
+              lineHeight: 1.5,
+              color: 'var(--paper-700)',
+              border: '1px solid var(--paper-300)',
+              borderRadius: 'var(--radius-input)',
+              resize: 'vertical',
+              outline: 'none',
+              backgroundColor: '#fff',
+            }}
+          />
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              marginTop: '4px',
+              fontSize: '11px',
+              color: 'var(--paper-400)',
+              fontFamily: 'var(--font-mono)',
+            }}
+          >
+            <span>
+              Folded into the prompt fingerprint — two drafts with different
+              instructions are independent.
+            </span>
+            <span>
+              {extraInstructions.length} / {EXTRA_INSTRUCTIONS_MAX}
+            </span>
+          </div>
         </div>
 
         {/* Generate CTA (bottom) */}

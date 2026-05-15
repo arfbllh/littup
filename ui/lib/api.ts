@@ -6,11 +6,14 @@ import type {
   TemplateInfo,
   DraftCreateRequest,
   DraftCreateResponse,
+  DraftList,
   DraftResponse,
   LlmStats,
   RuleExtractorRunResponse,
   AdminTemplatesResponse,
   TemplateVersionsResponse,
+  SectionView,
+  EditMetricsResponse,
 } from './types';
 
 const API_BASE = '/api';
@@ -57,6 +60,24 @@ export async function getBlocks(docId: string): Promise<BlocksResponse> {
   return apiFetch<BlocksResponse>(`${API_BASE}/documents/${docId}/blocks`);
 }
 
+export async function retryDocument(
+  docId: string,
+  options: { force?: boolean } = {},
+): Promise<DocumentStatus> {
+  const qs = options.force ? '?force=true' : '';
+  return apiFetch<DocumentStatus>(`${API_BASE}/documents/${docId}/retry${qs}`, {
+    method: 'POST',
+  });
+}
+
+export async function deleteDocument(docId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/documents/${docId}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => 'Unknown error');
+    throw new Error(`Delete error ${res.status}: ${text}`);
+  }
+}
+
 export function getPageImageUrl(docId: string, page: number): string {
   return `${API_BASE}/documents/${docId}/pages/${page}`;
 }
@@ -76,10 +97,26 @@ export async function getDraft(id: string): Promise<DraftResponse> {
   return apiFetch<DraftResponse>(`${API_BASE}/drafts/${id}`);
 }
 
-export async function regenerateSection(draftId: string, sectionName: string): Promise<void> {
-  await apiFetch<void>(`${API_BASE}/drafts/${draftId}/sections/${encodeURIComponent(sectionName)}/regenerate`, {
-    method: 'POST',
-  });
+export async function listDrafts(): Promise<DraftList> {
+  return apiFetch<DraftList>(`${API_BASE}/drafts`);
+}
+
+export async function deleteDraft(draftId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/drafts/${draftId}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => 'Unknown error');
+    throw new Error(`Delete error ${res.status}: ${text}`);
+  }
+}
+
+export async function regenerateSection(
+  draftId: string,
+  sectionName: string,
+): Promise<SectionView> {
+  return apiFetch<SectionView>(
+    `${API_BASE}/drafts/${draftId}/sections/${encodeURIComponent(sectionName)}/regenerate`,
+    { method: 'POST' },
+  );
 }
 
 export async function saveEdit(draftId: string, finalOutput: Record<string, unknown>): Promise<DraftResponse> {
@@ -115,4 +152,44 @@ export async function getTemplateVersions(templateId: string): Promise<TemplateV
   const res = await fetch(`${ADMIN_BASE}/templates/${encodeURIComponent(templateId)}/versions`);
   if (!res.ok) throw new Error(`Admin API error ${res.status}`);
   return res.json() as Promise<TemplateVersionsResponse>;
+}
+
+export interface BlockEditResponse {
+  block_id: string;
+  affected_chunks: number;
+  stale_citations: number;
+  no_change: boolean;
+}
+
+export async function patchBlockText(
+  docId: string,
+  blockId: string,
+  text: string,
+): Promise<BlockEditResponse> {
+  return apiFetch<BlockEditResponse>(
+    `${API_BASE}/documents/${docId}/blocks/${blockId}`,
+    { method: 'PATCH', body: JSON.stringify({ text }) },
+  );
+}
+
+export interface RevalidateResponse {
+  draft_id: string;
+  revalidated: number;
+  by_status: Record<string, number>;
+}
+
+export async function revalidateDraft(draftId: string): Promise<RevalidateResponse> {
+  return apiFetch<RevalidateResponse>(`${API_BASE}/drafts/${draftId}/revalidate`, {
+    method: 'POST',
+  });
+}
+
+export async function getEditMetrics(
+  templateId: string,
+  days?: number,
+): Promise<EditMetricsResponse> {
+  const qs = days ? `?days=${days}` : '';
+  return apiFetch<EditMetricsResponse>(
+    `${API_BASE}/templates/${encodeURIComponent(templateId)}/edit-metrics${qs}`,
+  );
 }

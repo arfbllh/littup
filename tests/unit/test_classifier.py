@@ -8,12 +8,10 @@ import pytest
 from app.ingest.classifier import PageType, classify_page
 from app.ingest.ocr.base import ClassifyConfig, OCRConfig, reset_ocr_config_cache
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
 def _reset_config_cache():
-    from app.ingest.ocr.base import reset_ocr_config_cache
     reset_ocr_config_cache()
     yield
     reset_ocr_config_cache()
@@ -55,6 +53,21 @@ def _handwriting() -> np.ndarray:
         x_off = i * 35
         cv2.line(img, (x_off, 20), (x_off + 280, 560), (0, 0, 0), 2)
         cv2.line(img, (x_off + 280, 20), (x_off, 560), (0, 0, 0), 2)
+    return img
+
+
+def _degraded_print() -> np.ndarray:
+    """Sharp horizontal text strokes peppered with salt-and-pepper noise —
+    DEGRADED_SCAN (sharp enough to clear the blur threshold, no diagonals,
+    but plenty of speckle).
+    """
+    img = _clean_scan()
+    rng = np.random.default_rng(seed=42)
+    # Salt-and-pepper density ~6% — typical of vintage prints / photocopies
+    h, w = img.shape[:2]
+    mask = rng.random((h, w))
+    img[mask < 0.03] = 0      # pepper
+    img[mask > 0.97] = 255    # salt (already white, but cements the mask shape)
     return img
 
 
@@ -100,6 +113,29 @@ def test_blurry_threshold_configurable():
 
 
 def test_result_confidence_in_range():
-    for img in [_clean_scan(), _blurry(), _handwriting()]:
+    for img in [_clean_scan(), _blurry(), _handwriting(), _degraded_print()]:
         _, conf = classify_page(img)
         assert 0.0 <= conf <= 1.0
+
+
+def test_degraded_scan_detected():
+    """A sharp page with salt-and-pepper noise should land as DEGRADED_SCAN —
+    not BLURRY (Laplacian variance stays high with noise) and not CLEAN
+    (speckle ratio exceeds the threshold).
+    """
+    img = _degraded_print()
+    page_type, conf = classify_page(img)
+    assert page_type == PageType.DEGRADED_SCAN
+    assert conf > cfg().classify.noise_speckle_ratio_threshold
+
+
+def test_degraded_threshold_configurable():
+    """Lifting the speckle threshold to 1.0 should suppress DEGRADED detection
+    entirely (no real-world page has noise_ratio > 1).
+    """
+    suppressed_cfg = OCRConfig(
+        classify=ClassifyConfig(noise_speckle_ratio_threshold=1.0)
+    )
+    img = _degraded_print()
+    page_type, _ = classify_page(img, config=suppressed_cfg)
+    assert page_type == PageType.CLEAN_SCAN

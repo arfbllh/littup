@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import statistics
 from dataclasses import dataclass, field
 from typing import Any
@@ -87,15 +86,62 @@ async def parse_layout(document_id: str, session: AsyncSession) -> dict[str, Any
     try:
         spans = await _load_spans(document_id, session)
 
-        if not spans:
-            await _transition_layout_done(document_id, session, blocks=[])
-            return {"document_id": document_id, "block_count": 0}
-
         doc_row = await session.execute(
-            text("SELECT sha256, mime_type FROM app.documents WHERE id = :id"),
+            text("SELECT sha256, mime_type, page_count FROM app.documents WHERE id = :id"),
             {"id": document_id},
         )
         doc = doc_row.fetchone()
+
+        # WS-A.3: if pages were rendered but OCR pulled nothing, fail loudly
+        # instead of silently advancing to `ready` with zero blocks.
+        if not spans:
+            page_count = int((doc.page_count if doc is not None else 0) or 0)
+            if page_count > 0:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE app.documents
+                           SET status = 'failed',
+                               error_code = 'EMPTY_OCR_OUTPUT',
+                               error_message = :msg,
+                               updated_at = NOW()
+                         WHERE id = :id
+                        """
+                    ),
+                    {
+                        "id": document_id,
+                        "msg": (
+                            f"OCR produced no spans across {page_count} page(s); "
+                            "likely a scanned PDF without a usable text layer."
+                        ),
+                    },
+                )
+                await DocumentEventBus.emit(
+                    session,
+                    document_id,
+                    "failed",
+                    {
+                        "error_code": "EMPTY_OCR_OUTPUT",
+                        "page_count": page_count,
+                        "span_count": 0,
+                    },
+                )
+                await session.commit()
+                logger.warning(
+                    "layout_empty_spans",
+                    document_id=document_id,
+                    page_count=page_count,
+                )
+                return {
+                    "document_id": document_id,
+                    "block_count": 0,
+                    "failed": True,
+                    "error_code": "EMPTY_OCR_OUTPUT",
+                }
+            # No spans AND no pages — let the empty-blocks path complete; this
+            # is a degenerate input that callers can treat as ready-empty.
+            await _transition_layout_done(document_id, session, blocks=[])
+            return {"document_id": document_id, "block_count": 0}
 
         loop = asyncio.get_running_loop()
         blocks = await loop.run_in_executor(None, _parse_blocks_sync, spans, doc)

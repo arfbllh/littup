@@ -3,13 +3,14 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import useSWR from 'swr';
-import { Search, Upload, ChevronRight } from 'lucide-react';
+import { Search, Upload, ChevronRight, RotateCw, Trash2 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { StatusPill } from '@/components/ui/status-pill';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { UploadDropzone } from '@/components/UploadDropzone';
-import { listDocuments } from '@/lib/api';
+import { listDocuments, retryDocument, deleteDocument } from '@/lib/api';
 import type { DocumentSummary } from '@/lib/types';
 
 function formatBytes(bytes: number | null): string {
@@ -30,12 +31,72 @@ export default function DocumentsPage() {
   const router = useRouter();
   const [filter, setFilter] = useState('');
   const [showUpload, setShowUpload] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DocumentSummary | null>(null);
 
   const { data, error, isLoading, mutate } = useSWR(
     'documents',
     () => listDocuments(),
-    { refreshInterval: 5_000 }
+    {
+      // Poll fast (2s) while any document is still processing so the list
+      // doesn't lag a step behind the detail page; idle to 10s once everything
+      // is terminal to avoid pointless traffic.
+      refreshInterval: (latest) => {
+        const anyActive = (latest?.items ?? []).some(
+          (d) => d.status !== 'ready' && d.status !== 'failed'
+        );
+        return anyActive ? 2_000 : 10_000;
+      },
+    }
   );
+
+  async function handleRetry(
+    docId: string,
+    event: React.MouseEvent,
+    opts: { force?: boolean } = {},
+  ) {
+    event.stopPropagation();
+    if (retryingId) return;
+    setRetryingId(docId);
+    try {
+      await retryDocument(docId, opts);
+      await mutate();
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(`Retry failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  function requestDelete(doc: DocumentSummary, event: React.MouseEvent) {
+    event.stopPropagation();
+    if (deletingId) return;
+    setDeleteTarget(doc);
+  }
+
+  async function confirmDelete() {
+    const doc = deleteTarget;
+    if (!doc) return;
+    setDeletingId(doc.document_id);
+    await mutate(
+      (curr) =>
+        curr && { ...curr, items: curr.items.filter((d) => d.document_id !== doc.document_id) },
+      { revalidate: false }
+    );
+    try {
+      await deleteDocument(doc.document_id);
+      await mutate();
+      setDeleteTarget(null);
+    } catch (err) {
+      await mutate();
+      // eslint-disable-next-line no-alert
+      alert(`Delete failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const documents: DocumentSummary[] = data?.items ?? [];
 
@@ -166,7 +227,42 @@ export default function DocumentsPage() {
                       </div>
                     </td>
                     <td>
-                      <StatusPill status={doc.status} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <StatusPill status={doc.status} />
+                        {(() => {
+                          const stuckEmpty =
+                            doc.status === 'ready' && doc.has_blocks === false;
+                          if (doc.status !== 'failed' && !stuckEmpty) return null;
+                          return (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              icon={RotateCw}
+                              onClick={(e) =>
+                                handleRetry(doc.document_id, e, { force: stuckEmpty })
+                              }
+                              disabled={retryingId === doc.document_id}
+                              title={
+                                stuckEmpty
+                                  ? 'Document finished with zero extracted blocks. Force-retry to re-run OCR.'
+                                  : undefined
+                              }
+                            >
+                              {retryingId === doc.document_id ? 'Retrying…' : 'Retry'}
+                            </Button>
+                          );
+                        })()}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={Trash2}
+                          onClick={(e) => requestDelete(doc, e)}
+                          disabled={deletingId === doc.document_id}
+                          aria-label={`Delete ${doc.filename}`}
+                        >
+                          {deletingId === doc.document_id ? 'Deleting…' : ''}
+                        </Button>
+                      </div>
                     </td>
                     <td>
                       <span className="mono-id">
@@ -193,6 +289,29 @@ export default function DocumentsPage() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete document?"
+        message={
+          deleteTarget && (
+            <>
+              <strong style={{ color: 'var(--paper-700)' }}>{deleteTarget.filename}</strong> and
+              every artifact derived from it (pages, blocks, chunks, embeddings, drafts) will be
+              removed. This cannot be undone.
+            </>
+          )
+        }
+        confirmLabel="Delete"
+        variant="danger"
+        icon={Trash2}
+        busy={deletingId !== null}
+        onConfirm={confirmDelete}
+        onCancel={() => {
+          if (deletingId) return;
+          setDeleteTarget(null);
+        }}
+      />
     </div>
   );
 }

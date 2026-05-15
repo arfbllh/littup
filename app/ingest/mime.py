@@ -3,6 +3,9 @@
 We avoid the `python-magic` system dependency (libmagic) for M3. The
 allowlist is small and the magic numbers are stable; if M4 needs more
 exotic types we can swap to `python-magic`.
+
+Plain-text formats have no magic bytes, so detection falls back to the
+caller's filename hint plus a UTF-8 / no-NUL-byte sniff.
 """
 
 from __future__ import annotations
@@ -15,14 +18,32 @@ PDF = "application/pdf"
 PNG = "image/png"
 JPEG = "image/jpeg"
 TIFF = "image/tiff"
+WEBP = "image/webp"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+TXT = "text/plain"
+MARKDOWN = "text/markdown"
+JSON_MIME = "application/json"
 
 ALLOWED: dict[str, str] = {
     PDF: ".pdf",
     PNG: ".png",
     JPEG: ".jpg",
     TIFF: ".tiff",
+    WEBP: ".webp",
     DOCX: ".docx",
+    TXT: ".txt",
+    MARKDOWN: ".md",
+    JSON_MIME: ".json",
+}
+
+# Filename-extension hints for formats without reliable magic bytes
+# (plain text) or whose magic is shared with other formats (DOCX = ZIP).
+_EXT_HINTS: dict[str, str] = {
+    ".txt": TXT,
+    ".md": MARKDOWN,
+    ".markdown": MARKDOWN,
+    ".json": JSON_MIME,
+    ".docx": DOCX,
 }
 
 
@@ -31,10 +52,12 @@ class UnsupportedMimeError(AppError):
         super().__init__(message, code="UNSUPPORTED_MIME", status_code=415)
 
 
-def detect_mime(path: Path) -> str:
+def detect_mime(path: Path, *, filename_hint: str | None = None) -> str:
     """Sniff the first 16 bytes to identify supported types.
 
-    Raises UnsupportedMimeError for anything outside ALLOWED.
+    Falls back to ``filename_hint`` extension for formats without reliable
+    magic bytes (plain text, Markdown). Raises ``UnsupportedMimeError`` for
+    anything outside ALLOWED.
     """
     with path.open("rb") as f:
         head = f.read(16)
@@ -47,11 +70,24 @@ def detect_mime(path: Path) -> str:
         return JPEG
     if head[:4] in (b"II*\x00", b"MM\x00*"):
         return TIFF
-    # DOCX is a ZIP with a specific marker; rely on the .docx caller's extension hint
-    # to avoid misclassifying generic .zip files as DOCX. Magic bytes alone for ZIP
-    # are PK\x03\x04 — for M3 we only treat it as DOCX if the caller intends DOCX,
-    # which here means filename-based hinting at the route level. For now, reject
-    # generic ZIPs and let M4 add proper OOXML inspection if/when we need DOCX.
+    # WEBP: "RIFF" then 4 size bytes then "WEBP"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return WEBP
+
+    # Extension-hinted formats: DOCX (which is a ZIP, magic alone is ambiguous)
+    # and plain-text formats which have no magic at all.
+    if filename_hint:
+        ext = Path(filename_hint).suffix.lower()
+        hinted = _EXT_HINTS.get(ext)
+        if hinted is not None:
+            # Sanity-check text hints: file must decode as UTF-8 and have no NUL bytes,
+            # so a renamed binary doesn't slip through.
+            if hinted in (TXT, MARKDOWN, JSON_MIME) and not _looks_like_text(path):
+                raise UnsupportedMimeError(
+                    f"File hinted as {hinted!r} but content is not valid UTF-8 text"
+                )
+            return hinted
+
     raise UnsupportedMimeError(f"Unrecognized file content (magic={head[:8]!r})")
 
 
@@ -60,3 +96,16 @@ def ext_for(mime: str) -> str:
         return ALLOWED[mime]
     except KeyError as exc:
         raise UnsupportedMimeError(f"No extension registered for {mime!r}") from exc
+
+
+def _looks_like_text(path: Path, *, sample_bytes: int = 4096) -> bool:
+    """Return True if the file is plausibly UTF-8 text with no NUL bytes."""
+    with path.open("rb") as f:
+        sample = f.read(sample_bytes)
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True

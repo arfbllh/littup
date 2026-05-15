@@ -8,9 +8,25 @@ interface PageWithBboxesProps {
   page: number;
   highlightBbox?: [number, number, number, number] | null;
   style?: React.CSSProperties;
+  /** Document ingestion status — controls the placeholder copy when the image 404s. */
+  docStatus?: string;
 }
 
-export function PageWithBboxes({ documentId, page, highlightBbox, style }: PageWithBboxesProps) {
+// Stages before page PNGs are written to disk by the OCR worker.
+const PRE_OCR_STATES = new Set(['uploaded', 'ocr_pending', 'ocr_running']);
+
+function placeholderMessage(page: number, docStatus: string | undefined): string {
+  if (docStatus === 'failed') return `Ingestion failed — page ${page} was never rendered.`;
+  if (docStatus && PRE_OCR_STATES.has(docStatus)) {
+    return `Page ${page} renders after OCR completes.`;
+  }
+  if (docStatus && docStatus !== 'ready') {
+    return `Page ${page} not ready yet — still processing.`;
+  }
+  return `Page ${page} not available`;
+}
+
+export function PageWithBboxes({ documentId, page, highlightBbox, style, docStatus }: PageWithBboxesProps) {
   const imgRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
@@ -36,14 +52,17 @@ export function PageWithBboxes({ documentId, page, highlightBbox, style }: PageW
     if (!highlightBbox) return;
 
     const [x0, y0, x1, y1] = highlightBbox;
-    // Scale from natural image coords to rendered display coords
-    const scaleX = rect.width / imgSize.w;
-    const scaleY = rect.height / imgSize.h;
+    // Bboxes are normalized [0,1] when produced by pdfplumber / PaddleOCR (the
+    // common case). Docling, on the rare native-doc path, emits PDF-point
+    // coords. Detect by max magnitude and scale accordingly.
+    const normalized = Math.max(x0, y0, x1, y1) <= 1.0001;
+    const sx = normalized ? rect.width : rect.width / imgSize.w;
+    const sy = normalized ? rect.height : rect.height / imgSize.h;
 
-    const rx = x0 * scaleX;
-    const ry = y0 * scaleY;
-    const rw = (x1 - x0) * scaleX;
-    const rh = (y1 - y0) * scaleY;
+    const rx = x0 * sx;
+    const ry = y0 * sy;
+    const rw = (x1 - x0) * sx;
+    const rh = (y1 - y0) * sy;
 
     ctx.strokeStyle = 'var(--ochre-500, #b8741a)';
     ctx.lineWidth = 2;
@@ -56,6 +75,13 @@ export function PageWithBboxes({ documentId, page, highlightBbox, style }: PageW
   useEffect(() => {
     drawHighlight();
   }, [drawHighlight]);
+
+  // Reset the error flag when the source URL or doc status changes — without this,
+  // an early 404 (e.g. during ocr_pending) sticks even after the image becomes
+  // available, so the user sees the placeholder forever.
+  useEffect(() => {
+    setImgError(false);
+  }, [imageUrl, docStatus]);
 
   function handleImageLoad() {
     const img = imgRef.current;
@@ -90,7 +116,7 @@ export function PageWithBboxes({ documentId, page, highlightBbox, style }: PageW
             textAlign: 'center',
           }}
         >
-          Page {page} not available
+          {placeholderMessage(page, docStatus)}
         </div>
       ) : (
         <>

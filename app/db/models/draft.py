@@ -29,6 +29,7 @@ class Draft(Base):
     generated_at: Mapped[datetime | None] = mapped_column(TZ)
     edited_at: Mapped[datetime | None] = mapped_column(TZ)
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+    extra_instructions: Mapped[str | None] = mapped_column(Text)
 
     sections: Mapped[list["Section"]] = relationship("Section", back_populates="draft", cascade="all, delete-orphan")
     edits: Mapped[list["Edit"]] = relationship("Edit", back_populates="draft")  # noqa: F821

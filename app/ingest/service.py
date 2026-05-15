@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import IngestError, RateLimitError
 from app.ingest.events import DocumentEventBus, DocumentEventRow
 from app.ingest.hashing import HashedUpload, stream_to_tempfile
-from app.ingest.mime import PDF, detect_mime, ext_for
+from app.ingest.mime import JSON_MIME, MARKDOWN, PDF, TXT, detect_mime, ext_for
 from app.ingest.storage import LocalBlobStore
 from app.jobs.kinds import JobKind
 from app.jobs.queue import JobQueue
@@ -56,6 +56,7 @@ class DocumentRecord:
     error_message: str | None
     created_at: Any
     updated_at: Any
+    has_blocks: bool = False
 
 
 class IngestService:
@@ -88,7 +89,7 @@ class IngestService:
             upload, tmp_dir=self.store.tmp_dir, max_bytes=settings.MAX_UPLOAD_BYTES
         )
         try:
-            mime = detect_mime(hashed.path)
+            mime = detect_mime(hashed.path, filename_hint=upload.filename)
             ext = ext_for(mime)
             filename = upload.filename or f"{hashed.sha256}{ext}"
 
@@ -218,16 +219,21 @@ class IngestService:
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         where = ""
         if status_filter:
-            where = "WHERE status = :status"
+            where = "WHERE d.status = :status"
             params["status"] = status_filter
+        # WS-A.4: `has_blocks` lets the list page surface a retry button on
+        # `ready` docs with zero extracted blocks without an N+1 fetch.
         result = await self.session.execute(
             text(
                 f"""
-                SELECT id, sha256, filename, mime_type, size_bytes, page_count,
-                       status, last_event_seq, error_code, error_message,
-                       created_at, updated_at
-                FROM app.documents {where}
-                ORDER BY created_at DESC
+                SELECT d.id, d.sha256, d.filename, d.mime_type, d.size_bytes,
+                       d.page_count, d.status, d.last_event_seq, d.error_code,
+                       d.error_message, d.created_at, d.updated_at,
+                       EXISTS (
+                           SELECT 1 FROM app.blocks b WHERE b.document_id = d.id
+                       ) AS has_blocks
+                FROM app.documents d {where}
+                ORDER BY d.created_at DESC
                 LIMIT :limit OFFSET :offset
                 """
             ),
@@ -248,6 +254,7 @@ class IngestService:
                 error_message=r.error_message,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
+                has_blocks=bool(r.has_blocks),
             )
             for r in rows
         ]
@@ -296,7 +303,7 @@ class IngestService:
         self,
         document_id: str,
         *,
-        llm_router: "LLMRouter | None" = None,
+        llm_router: LLMRouter | None = None,
         config=None,  # OCRConfig | None — pass in tests to override YAML config
     ) -> dict[str, Any]:
         """Drive a document through the OCR state machine.
@@ -305,8 +312,8 @@ class IngestService:
         State transitions: ocr_pending → ocr_running → ocr_done (or failed).
         """
         from app.ingest.ocr.base import load_ocr_config
-        from app.ingest.ocr.pdfplumber_ocr import has_text_layer
         from app.ingest.ocr.paddle_ocr import release_paddle
+        from app.ingest.ocr.pdfplumber_ocr import has_text_layer
         from app.ingest.ocr.routing import route_and_extract
 
         cfg = config if config is not None else load_ocr_config(settings.OCR_CONFIG_PATH)
@@ -349,8 +356,15 @@ class IngestService:
         )
         await self.session.commit()
 
+        # ── Text-bearing formats (.txt, .md, .json) bypass OCR entirely ───────
+        mime_lower = (doc.mime_type or "").lower()
+        if mime_lower in (TXT, MARKDOWN, JSON_MIME):
+            return await self._extract_text_document(
+                document_id=document_id, file_path=file_path, mime=mime_lower
+            )
+
         # ── Determine if this is a native PDF ─────────────────────────────────
-        is_pdf = (doc.mime_type or "").lower() == PDF
+        is_pdf = mime_lower == PDF
         native = is_pdf and has_text_layer(file_path)
         is_scan_pdf = is_pdf and not native
 
@@ -460,8 +474,8 @@ class IngestService:
         except ImportError as exc:
             raise IngestError("pdf2image not installed", code="PDF2IMAGE_MISSING") from exc
 
-        import numpy as np
         import cv2
+        import numpy as np
 
         loop = asyncio.get_running_loop()
 
@@ -624,6 +638,127 @@ class IngestService:
                 return 612.0, 792.0  # fallback to letter size
             page = pdf.pages[page_num - 1]
             return float(page.width or 612.0), float(page.height or 792.0)
+
+    async def _extract_text_document(
+        self, *, document_id: str, file_path: Path, mime: str
+    ) -> dict[str, Any]:
+        """Bypass OCR for plain-text formats.
+
+        Reads the file as UTF-8, splits on blank lines into paragraphs, and
+        writes one synthetic page + one span per paragraph (with sequential
+        non-overlapping normalised bboxes so the layout pass groups them as
+        distinct blocks). Drives the doc straight to ocr_done; the OCR job
+        handler then enqueues layout as usual.
+        """
+        try:
+            raw = await asyncio.get_running_loop().run_in_executor(
+                _OCR_EXECUTOR, file_path.read_text, "utf-8"
+            )
+        except UnicodeDecodeError as exc:
+            await self._fail_document(
+                document_id, "TEXT_DECODE_ERROR", f"Could not decode as UTF-8: {exc}"
+            )
+            await self.session.commit()
+            raise IngestError(
+                f"Text file {file_path} is not valid UTF-8: {exc}",
+                code="TEXT_DECODE_ERROR",
+                retryable=False,
+            ) from exc
+
+        # Split on blank lines; collapse interior whitespace; drop empties.
+        paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [raw.strip() or ""]
+
+        await self.session.execute(
+            text("UPDATE app.documents SET page_count = 1 WHERE id = :id"),
+            {"id": document_id},
+        )
+        await self.session.commit()
+
+        page_row = await self.session.execute(
+            text(
+                """
+                INSERT INTO app.pages (document_id, page_number, width, height, status)
+                VALUES (:doc_id, 1, 1.0, 1.0, 'ocr_done')
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """
+            ),
+            {"doc_id": document_id},
+        )
+        row = page_row.fetchone()
+        if row is None:
+            existing = await self.session.execute(
+                text("SELECT id FROM app.pages WHERE document_id = :d AND page_number = 1"),
+                {"d": document_id},
+            )
+            row = existing.fetchone()
+        if row is None:
+            await self._fail_document(
+                document_id, "PAGE_CREATE_ERROR", "Could not create page row for text doc"
+            )
+            await self.session.commit()
+            raise IngestError("Page row insert failed for text document", code="PAGE_CREATE_ERROR")
+        page_id = str(row.id)
+
+        # One span per paragraph, normalised bbox spanning a vertical slice
+        # of the page. The layout pass groups by vertical proximity, so the
+        # slices need clear gaps to land as separate blocks.
+        if mime == MARKDOWN:
+            source_tag = "markdown"
+        elif mime == JSON_MIME:
+            source_tag = "json"
+        else:
+            source_tag = "text"
+        n = len(paragraphs)
+        slice_h = 1.0 / max(n, 1)
+        span_rows = []
+        for i, para in enumerate(paragraphs):
+            y0 = i * slice_h
+            y1 = (i + 1) * slice_h - (slice_h * 0.2 if n > 1 else 0)
+            span_rows.append({
+                "page_id": page_id,
+                "text": para,
+                "x0": 0.05,
+                "y0": y0,
+                "x1": 0.95,
+                "y1": max(y1, y0 + 1e-4),
+                "confidence": 1.0,
+                "source": source_tag,
+            })
+        if span_rows:
+            await self.session.execute(
+                text(
+                    """
+                    INSERT INTO app.spans
+                           (page_id, text, bbox_x0, bbox_y0, bbox_x1, bbox_y1, confidence, source)
+                    VALUES (:page_id, :text, :x0, :y0, :x1, :y1, :confidence, :source)
+                    """
+                ),
+                span_rows,
+            )
+
+        await self._set_doc_status(document_id, "ocr_done")
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "ocr_done"}
+        )
+        await self.session.commit()
+
+        logger.info(
+            "text_document_extracted",
+            document_id=document_id,
+            mime=mime,
+            paragraph_count=n,
+            char_count=len(raw),
+        )
+        return {
+            "document_id": document_id,
+            "page_count": 1,
+            "total_spans": n,
+            "vlm_pages": 0,
+            "pages": [{"page": 1, "status": "ocr_done", "span_count": n, "source": source_tag}],
+        }
 
     # ── Layout / Chunking / Embedding orchestration (M5) ──────────────────────
 
@@ -845,6 +980,149 @@ class IngestService:
             ),
             {"s": status, "id": document_id},
         )
+
+    async def delete_document(self, document_id: str) -> dict[str, Any]:
+        """Delete a document and every artifact derived from it.
+
+        FK cascades cover app.pages → app.spans, app.blocks, app.chunks, and
+        app.document_events. We additionally drop jobs.jobs rows for this doc
+        (no FK), the uploaded blob on disk (safe: sha256 is unique to one doc),
+        and any cached page images.
+        """
+        import shutil
+
+        doc = await self.get_document(document_id)
+        if doc is None:
+            raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
+
+        await self.session.execute(
+            text("DELETE FROM jobs.jobs WHERE payload->>'document_id' = :id"),
+            {"id": document_id},
+        )
+        await self.session.execute(
+            text("DELETE FROM app.documents WHERE id = :id"), {"id": document_id}
+        )
+        await self.session.commit()
+
+        if doc.mime_type:
+            try:
+                blob_path = self.store.path_for(doc.sha256, ext_for(doc.mime_type))
+                blob_path.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "ingest_delete_blob_failed",
+                    document_id=document_id,
+                    sha256=doc.sha256,
+                    error=str(exc),
+                )
+
+        page_image_dir = self.store.page_image_dir / document_id
+        if page_image_dir.exists():
+            try:
+                shutil.rmtree(page_image_dir, ignore_errors=True)
+            except Exception as exc:
+                logger.warning(
+                    "ingest_delete_page_images_failed",
+                    document_id=document_id,
+                    error=str(exc),
+                )
+
+        logger.info(
+            "ingest_deleted",
+            document_id=document_id,
+            sha256=doc.sha256,
+            filename=doc.filename,
+        )
+        return {"document_id": document_id, "deleted": True}
+
+    async def retry_document(
+        self, document_id: str, *, force: bool = False
+    ) -> dict[str, Any]:
+        """Reset a document and re-enqueue it at the start of the pipeline.
+
+        Wipes intermediate artifacts (pages → spans cascade, blocks, chunks) so
+        the re-run produces a clean state instead of duplicating rows. The dedup
+        key gets a UUID suffix because the original `ocr:{doc_id}` row still
+        exists in `jobs.jobs` (completed or failed) and the unique constraint
+        would otherwise block re-enqueue.
+
+        WS-A.2: with ``force=True``, allow retry from any terminal state
+        (``ready``, ``failed``) so an operator can unstick a doc that reached
+        ``ready`` with zero blocks.
+        """
+        doc = await self.get_document(document_id)
+        if doc is None:
+            raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
+
+        terminal_states = {"failed", "ready"} if force else {"failed"}
+        if doc.status not in terminal_states:
+            raise IngestError(
+                f"Cannot retry document in status '{doc.status}'; "
+                f"retryable states are {sorted(terminal_states)}",
+                code="NOT_RETRYABLE",
+                retryable=False,
+            )
+        if force and doc.status != "failed":
+            logger.warning(
+                "ingest_retry_forced",
+                document_id=document_id,
+                previous_status=doc.status,
+            )
+
+        # Cascades: deleting pages drops spans; deleting documents would drop
+        # everything but we want to keep the document row itself.
+        await self.session.execute(
+            text("DELETE FROM app.chunks WHERE document_id = :id"), {"id": document_id}
+        )
+        await self.session.execute(
+            text("DELETE FROM app.blocks WHERE document_id = :id"), {"id": document_id}
+        )
+        await self.session.execute(
+            text("DELETE FROM app.pages WHERE document_id = :id"), {"id": document_id}
+        )
+
+        # Drop any prior job rows for this document so downstream stages —
+        # which enqueue with stable dedup keys like `layout:{doc_id}` — aren't
+        # silently de-duplicated against rows from the failed run.
+        await self.session.execute(
+            text(
+                "DELETE FROM jobs.jobs WHERE payload->>'document_id' = :id"
+            ),
+            {"id": document_id},
+        )
+
+        await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'uploaded',
+                       error_code = NULL,
+                       error_message = NULL,
+                       page_count = NULL,
+                       embedded_at = NULL,
+                       updated_at = NOW()
+                 WHERE id = :id
+                """
+            ),
+            {"id": document_id},
+        )
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "uploaded"}
+        )
+
+        await self.queue.enqueue(
+            kind=JobKind.OCR.value,
+            payload={"document_id": document_id},
+            dedup_key=f"ocr:{document_id}",
+        )
+        await self.session.commit()
+
+        logger.info(
+            "ingest_retried",
+            document_id=document_id,
+            previous_error_code=doc.error_code,
+        )
+        return {"document_id": document_id, "status": "uploaded"}
 
     async def _fail_document(self, document_id: str, code: str, message: str) -> None:
         await self.session.execute(

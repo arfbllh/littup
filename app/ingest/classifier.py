@@ -11,6 +11,7 @@ class PageType(StrEnum):
     NATIVE = "native"             # PDF with embedded text layer
     BLURRY_SCAN = "blurry_scan"   # Low-sharpness scan; deskew + denoise before OCR
     HANDWRITING_LIKELY = "handwriting_likely"  # Dominant diagonal strokes
+    DEGRADED_SCAN = "degraded_scan"  # Sharp but noisy: vintage prints, photocopies, faxes
     FORM_LAYOUT = "form_layout"   # Reserved; routed same as CLEAN_SCAN for now
     CLEAN_SCAN = "clean_scan"     # Default; straight to PaddleOCR
 
@@ -30,6 +31,7 @@ def classify_page(
         return PageType.NATIVE, 1.0
 
     import cv2
+
     from app.ingest.ocr.base import load_ocr_config
 
     cfg = config or load_ocr_config()
@@ -68,5 +70,20 @@ def classify_page(
         ratio = diagonal_count / len(lines)
         if ratio > cfg.classify.handwriting_stroke_ratio_threshold:
             return PageType.HANDWRITING_LIKELY, float(ratio)
+
+    # ── Degradation detection via speckle ratio ──────────────────────────────
+    # Sharp pages can still be noisy (vintage prints, photocopies, faxes).
+    # Count the fraction of connected components in the binarised page that
+    # are tiny (<4 px) — typical of salt-and-pepper noise. A clean printed
+    # page has speckle ratio ≈ 0 (every component is a large glyph); a
+    # degraded scan is dominated by 1–3-pixel specks.
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if num_labels > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        small_components = int(np.count_nonzero(areas < 4))
+        speckle_ratio = small_components / float(num_labels - 1)
+        if speckle_ratio > cfg.classify.noise_speckle_ratio_threshold:
+            return PageType.DEGRADED_SCAN, min(speckle_ratio, 1.0)
 
     return PageType.CLEAN_SCAN, 0.9

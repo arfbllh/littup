@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -11,7 +12,7 @@ from app.llm.types import LLMResponse, Message, ProviderCapability, SamplingPara
 
 
 class VLLMProvider(LLMProvider):
-    """Talks to a local vLLM server over its OpenAI-compatible HTTP API."""
+    """Talks to a vLLM-compatible OpenAI HTTP endpoint (local vLLM or hosted, e.g. RunPod)."""
 
     def __init__(
         self,
@@ -22,6 +23,7 @@ class VLLMProvider(LLMProvider):
         timeout_s: int = 60,
         input_cost_per_1k: float = 0.0,
         output_cost_per_1k: float = 0.0,
+        api_key_env: str | None = None,
         client: httpx.AsyncClient | None = None,
     ):
         self.name = name
@@ -31,7 +33,11 @@ class VLLMProvider(LLMProvider):
         self.input_cost_per_1k = input_cost_per_1k
         self.output_cost_per_1k = output_cost_per_1k
         self.capabilities: set[ProviderCapability] = {"text", "json", "streaming"}
-        self._client = client or httpx.AsyncClient(timeout=timeout_s)
+        # Hosted vLLM endpoints (RunPod, etc.) typically require a Bearer token.
+        # A local vLLM with no auth leaves api_key_env unset → no header sent.
+        self._api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        self._client = client or httpx.AsyncClient(timeout=timeout_s, headers=headers)
 
     async def generate(
         self,

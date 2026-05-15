@@ -39,6 +39,7 @@ def _build_provider(name: str, cfg) -> LLMProvider:
             timeout_s=cfg.timeout_s,
             input_cost_per_1k=cfg.input_cost_per_1k,
             output_cost_per_1k=cfg.output_cost_per_1k,
+            api_key_env=cfg.api_key_env,
         )
     if cfg.type == "anthropic":
         return AnthropicProvider(

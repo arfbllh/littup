@@ -9,7 +9,7 @@ import { getLlmStats } from '@/lib/api';
 
 const NAV_ITEMS = [
   { label: 'Documents', href: '/documents', icon: FileText },
-  { label: 'Drafts', href: '/drafts/new', icon: FileEdit },
+  { label: 'Drafts', href: '/drafts', icon: FileEdit },
   { label: 'Admin', href: '/admin', icon: Settings },
 ];
 
@@ -32,7 +32,7 @@ export function Shell({ children }: ShellProps) {
 
   function isActive(href: string): boolean {
     if (href === '/documents') return pathname.startsWith('/documents');
-    if (href === '/drafts/new') return pathname.startsWith('/drafts');
+    if (href === '/drafts') return pathname.startsWith('/drafts');
     if (href === '/admin') return pathname.startsWith('/admin');
     return false;
   }

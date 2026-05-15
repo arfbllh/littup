@@ -1,4 +1,12 @@
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Push .env into os.environ so libraries that read env vars directly (HuggingFace
+# Hub looks for HF_TOKEN / HUGGING_FACE_HUB_TOKEN, OpenAI for OPENAI_API_KEY,
+# etc.) pick them up. pydantic-settings reads .env into the Settings object but
+# does not export it; this fills that gap. `override=False` keeps real shell
+# vars authoritative over .env.
+load_dotenv(override=False)
 
 
 class Settings(BaseSettings):
@@ -35,8 +43,10 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 32
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
     EMBEDDER_PROVIDER: str = "bge"   # "bge" | "openai"
+    HF_TOKEN: str = ""               # picked up by huggingface_hub via os.environ
+    TORCH_DEVICE: str = "cpu"        # "cpu" | "mps" | "cuda" — MPS on M1 hits a 9GB pool cap
 
-    # Ingestion (M3)
+    # Ingestion 
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
     UPLOAD_DIR: str = "data/uploads"
     PAGE_IMAGE_DIR: str = "data/page_images"
@@ -44,7 +54,7 @@ class Settings(BaseSettings):
     SSE_POLL_INTERVAL_SECONDS: float = 1.0
     SSE_MAX_STREAM_SECONDS: float = 600.0
 
-    # Retrieval (M6)
+    # Retrieval 
     HNSW_EF_SEARCH: int = 100
     RETRIEVAL_WORK_MEM: str = "64MB"
     RETRIEVAL_STATEMENT_TIMEOUT: str = "5s"
@@ -52,13 +62,13 @@ class Settings(BaseSettings):
     TRIGRAM_THRESHOLD: float = 0.15
     RETRIEVER_ALWAYS_TRIGRAM: bool = False
 
-    # OCR (M4)
+    # OCR 
     OCR_CONFIG_PATH: str = "config/ocr.yaml"
     OCR_USE_GPU: bool = False
     OCR_PAGE_WORKERS: int = 4       # thread-pool size for per-page OCR
     OCR_RASTER_DPI: int = 300       # dpi used when rasterising PDF pages for OCR
 
-    # Draft Engine (M7)
+    # Draft Engine
     TEMPLATES_DIR: str = "config/templates"
     DRAFT_EXTRACTION_TOP_K: int = 5
     DRAFT_SECTION_TOP_K: int = 8

@@ -58,3 +58,5 @@ previous_plans/
 .claude/worktrees/
 .PLAN.md
 docs/
+
+data/**/*

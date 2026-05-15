@@ -29,7 +29,7 @@ async def route_and_extract(
     doc_id: str,
     session: AsyncSession,
     config: OCRConfig | None = None,
-    llm_router: "LLMRouter | None" = None,
+    llm_router: LLMRouter | None = None,
 ) -> PageExtraction:
     """Classify the page, select the best provider, and return a PageExtraction.
 
@@ -57,34 +57,49 @@ async def route_and_extract(
     # ── Scan path: optionally preprocess, then PaddleOCR ─────────────────────
     # Keep the deskewed-only image separate: VLM receives it instead of the
     # binarized version so handwriting recognition is not degraded (M-4).
+    from app.ingest.ocr.paddle_ocr import PaddleProvider
+
+    preprocess_now = page_type in (
+        PageType.BLURRY_SCAN,
+        PageType.HANDWRITING_LIKELY,
+        PageType.DEGRADED_SCAN,
+    )
     deskewed_image = page_image
     paddle_image = page_image
-    if page_type in (PageType.BLURRY_SCAN, PageType.HANDWRITING_LIKELY):
-        from app.ingest.ocr.preprocess import preprocess_image
-        from app.ingest.ocr.base import OCRConfig, PreprocessConfig
-
-        # Deskewed-only: used for VLM (colour preserved)
-        deskew_only_cfg = OCRConfig(
-            preprocess=PreprocessConfig(
-                deskew_max_angle_deg=cfg.preprocess.deskew_max_angle_deg,
-                denoise=False,
-                binarize=False,
-            )
-        )
-        deskewed_image = preprocess_image(page_image, config=deskew_only_cfg)
-        # Fully preprocessed (denoise + binarize): used for PaddleOCR
-        paddle_image = preprocess_image(page_image, config=cfg)
-
-    from app.ingest.ocr.paddle_ocr import PaddleProvider
+    if preprocess_now:
+        deskewed_image, paddle_image = _build_preprocessed_images(page_image, cfg)
 
     extraction = await PaddleProvider().extract_page(
         source_path, page_num, page_image=paddle_image
     )
 
+    # ── CLEAN_SCAN retry: degraded vintage prints that the classifier missed.
+    # If PaddleOCR underperformed on a page we thought was clean, retry once
+    # with full preprocessing before spending VLM budget.
+    if (
+        page_type == PageType.CLEAN_SCAN
+        and extraction.mean_confidence < cfg.paddleocr_confidence_threshold
+    ):
+        deskewed_image, paddle_image = _build_preprocessed_images(page_image, cfg)
+        retry_extraction = await PaddleProvider().extract_page(
+            source_path, page_num, page_image=paddle_image
+        )
+        if retry_extraction.mean_confidence > extraction.mean_confidence:
+            logger.debug(
+                "ocr_clean_scan_retry_improved",
+                doc_id=doc_id,
+                page=page_num,
+                before=round(extraction.mean_confidence, 3),
+                after=round(retry_extraction.mean_confidence, 3),
+            )
+            extraction = retry_extraction
+
     # ── VLM escalation check ──────────────────────────────────────────────────
+    # Gate on confidence only: a low-quality page can need VLM regardless of
+    # whether the classifier tagged it as blurry/handwriting/degraded. The
+    # per-document cap (NN-6) still bounds total spend.
     needs_vlm = (
         extraction.mean_confidence < cfg.paddleocr_confidence_threshold
-        and page_type in (PageType.HANDWRITING_LIKELY, PageType.BLURRY_SCAN)
         and llm_router is not None
     )
     if not needs_vlm:
@@ -128,6 +143,32 @@ async def route_and_extract(
             error=str(exc),
         )
         return extraction
+
+
+# ── Preprocessing helper ──────────────────────────────────────────────────────
+
+def _build_preprocessed_images(
+    page_image: np.ndarray, cfg: OCRConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (deskewed_only, fully_preprocessed) images for one page.
+
+    The deskewed-only colour image is what we hand to the VLM; the fully
+    preprocessed (deskew + denoise + binarize) image is what we feed PaddleOCR.
+    """
+    from app.ingest.ocr.base import OCRConfig as _OCRConfig
+    from app.ingest.ocr.base import PreprocessConfig
+    from app.ingest.ocr.preprocess import preprocess_image
+
+    deskew_only_cfg = _OCRConfig(
+        preprocess=PreprocessConfig(
+            deskew_max_angle_deg=cfg.preprocess.deskew_max_angle_deg,
+            denoise=False,
+            binarize=False,
+        )
+    )
+    deskewed = preprocess_image(page_image, config=deskew_only_cfg)
+    full = preprocess_image(page_image, config=cfg)
+    return deskewed, full
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
