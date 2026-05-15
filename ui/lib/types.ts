@@ -5,6 +5,7 @@ export interface DocumentSummary {
   page_count: number | null;
   size_bytes: number | null;
   created_at: string;
+  has_blocks?: boolean;
 }
 
 export interface DocumentStatus extends DocumentSummary {
@@ -18,11 +19,13 @@ export interface DocumentStatus extends DocumentSummary {
 
 export interface Block {
   id: string;
-  kind: string;
+  block_type: string;
   text: string;
-  page: number;
+  page_start: number;
+  page_end: number;
+  reading_order: number;
   bbox: [number, number, number, number];
-  confidence: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TemplateInfo {
@@ -33,7 +36,13 @@ export interface TemplateInfo {
   fingerprint: string;
 }
 
-export type CitationStatus = 'supported' | 'partial' | 'unsupported' | 'unchecked';
+export type CitationStatus =
+  | 'supported'
+  | 'partial'
+  | 'unsupported'
+  | 'contradicted'
+  | 'unchecked'
+  | 'stale';
 
 export interface CitationView {
   chunk_id: string;
@@ -48,6 +57,8 @@ export interface SectionView {
   text: string | null;
   citations: CitationView[];
   groundedness: number | null;
+  target_length_min?: number | null;
+  target_length_max?: number | null;
 }
 
 export interface DraftResponse {
@@ -62,7 +73,9 @@ export interface DraftResponse {
   generated_at: string | null;
   cost_usd: number | null;
   edit_count: number;
-  error: unknown;
+  error: { error_code?: string | null; error_message?: string | null } | null;
+  document_ids?: string[];
+  extra_instructions?: string | null;
 }
 
 export interface DocumentList {
@@ -81,9 +94,30 @@ export interface BlocksResponse {
   blocks: Block[];
 }
 
+export interface DraftSummary {
+  draft_id: string;
+  template_id: string;
+  template_version: number;
+  status: string;
+  document_count: number;
+  model_used: string | null;
+  cost_usd: number | null;
+  groundedness_score: number | null;
+  edit_count: number;
+  error_code: string | null;
+  generated_at: string | null;
+  created_at: string;
+  has_extra_instructions?: boolean;
+}
+
+export interface DraftList {
+  items: DraftSummary[];
+}
+
 export interface DraftCreateRequest {
   template_id: string;
   document_ids: string[];
+  extra_instructions?: string | null;
 }
 
 export interface DraftCreateResponse {
@@ -172,4 +206,24 @@ export interface SSEEvent {
   event_type: string;
   seq: number;
   data: Record<string, unknown>;
+}
+
+export interface EditMetricFieldRow {
+  name: string;
+  edited_count: number;
+  edit_rate: number | null;
+}
+
+export interface EditMetricSectionRow {
+  name: string;
+  edited_count: number;
+  edit_rate: number | null;
+}
+
+export interface EditMetricsResponse {
+  template_id: string;
+  window_days: number;
+  drafts_count: number;
+  fields: EditMetricFieldRow[];
+  sections: EditMetricSectionRow[];
 }

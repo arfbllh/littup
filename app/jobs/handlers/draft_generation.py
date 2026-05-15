@@ -15,6 +15,7 @@ async def handle_draft_generation(payload: dict, session) -> dict:
     template_id = payload["template_id"]
     document_ids = payload["document_ids"]
     trace_id = payload.get("trace_id")
+    extra_instructions = payload.get("extra_instructions")
 
     # Bind trace_id into structlog contextvars so engine/router logs carry it
     if trace_id:
@@ -36,6 +37,7 @@ async def handle_draft_generation(payload: dict, session) -> dict:
             template_id=template_id,
             document_ids=document_ids,
             trace_id=trace_id,
+            extra_instructions=extra_instructions,
         )
     except DraftError:
         raise

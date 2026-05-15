@@ -3,6 +3,7 @@ paddleocr_confidence_threshold: 0.7
 classify:
   blurry_laplacian_variance_threshold: 100
   handwriting_stroke_ratio_threshold: 0.35
+  noise_speckle_ratio_threshold: 0.15
 preprocess:
   deskew_max_angle_deg: 15
   denoise: true

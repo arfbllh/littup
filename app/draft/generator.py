@@ -1,13 +1,14 @@
 """SectionGenerator — Pass 2 of the draft engine: prose generation with citations."""
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 
 import structlog
 
+from app.db.models.chunk import Chunk
 from app.draft.citations import parse_citations, strip_dangling
 from app.llm.types import Message, SamplingParams
-from app.db.models.chunk import Chunk
 
 log = structlog.get_logger(__name__)
 
@@ -58,6 +59,7 @@ class SectionGenerator:
         retrieved: dict[str, list[Chunk]],
         fingerprint: str,
         trace_id: str | None,
+        extra_instructions: str | None = None,
     ) -> tuple[list[SectionDraft], list[CitationDraft]]:
         all_chunk_ids: set[str] = set()
         for chunks in retrieved.values():
@@ -67,9 +69,18 @@ class SectionGenerator:
         all_sections: list[SectionDraft] = []
         all_citations: list[CitationDraft] = []
 
+        # WS-F: prefix operator's custom instructions so they show up in the
+        # user prompt for every section. Wrapped in a clear header so the model
+        # treats them as constraints, not source text.
+        prefix = (
+            f"\n\nOperator instructions (override conflicting defaults):\n{extra_instructions.strip()}\n"
+            if extra_instructions
+            else None
+        )
         for section_spec in template.sections:
             section_draft, citations = await self.generate_section(
-                section_spec, template, fields, retrieved, all_chunk_ids, trace_id
+                section_spec, template, fields, retrieved, all_chunk_ids, trace_id,
+                extra_instructions=prefix,
             )
             all_sections.append(section_draft)
             all_citations.extend(citations)
@@ -116,7 +127,7 @@ class SectionGenerator:
             and self._session is not None
             and self._current_template_id is not None
         ):
-            from app.edits.few_shot_store import chunks_to_context, _render_section_few_shot
+            from app.edits.few_shot_store import _render_section_few_shot, chunks_to_context
             from app.settings import settings as _settings
 
             chunk_context = chunks_to_context(chunks)

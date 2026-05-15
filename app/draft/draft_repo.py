@@ -1,14 +1,15 @@
 """DraftRepo — CRUD for Draft, Section, Citation aggregates."""
 from __future__ import annotations
+
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy import text, select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, NotFoundError
-from app.db.models.draft import Draft, Section, Citation
+from app.db.models.draft import Citation, Draft, Section
 
 log = structlog.get_logger(__name__)
 
@@ -18,7 +19,11 @@ class DraftRepo:
         self._session = session
 
     async def create_queued(
-        self, template_id: str, document_ids: list[str]
+        self,
+        template_id: str,
+        document_ids: list[str],
+        *,
+        extra_instructions: str | None = None,
     ) -> str:
         from app.core.ids import new_uuid7
         draft_id = new_uuid7()
@@ -29,6 +34,7 @@ class DraftRepo:
             prompt_fingerprint="",
             document_ids=document_ids,
             status="queued",
+            extra_instructions=extra_instructions,
         )
         self._session.add(draft)
         await self._session.flush()
@@ -133,7 +139,7 @@ class DraftRepo:
             ),
             {
                 "id": draft_id,
-                "now": datetime.now(timezone.utc),
+                "now": datetime.now(UTC),
                 "ai_output": json.dumps(ai_output),
                 "model": model_used,
                 "ti": tokens_in,

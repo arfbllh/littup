@@ -1,6 +1,9 @@
 """DraftEngine — orchestrates template snapshot, retrieval, extraction, generation."""
 from __future__ import annotations
 
+import hashlib
+import unicodedata
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +31,22 @@ def _gnd(r: ValidationReport) -> float:
     return (r.supported_count / r.total_claims) if r.total_claims else 0.0
 
 
+def _compose_fingerprint(template_fp: str, extra_instructions: str | None) -> str:
+    """Per-draft fingerprint (WS-F.3, option b).
+
+    Falls back to ``template_fp`` when no custom prompt is set so existing
+    drafts and template-keyed lookups remain stable. When a custom prompt is
+    present, fold it into the hash so two drafts with different prompts get
+    different cache keys (Inv #7) and edit-store identity (Inv #5).
+    """
+    if not extra_instructions:
+        return template_fp
+    normalized = unicodedata.normalize("NFC", extra_instructions)
+    return hashlib.sha256(
+        f"{template_fp}\n{normalized}".encode()
+    ).hexdigest()
+
+
 class DraftEngine:
     def __init__(
         self,
@@ -46,8 +65,8 @@ class DraftEngine:
         # Build FewShotStore once at construction — dim check happens here, not per-request.
         self._few_shot_store = None
         if embedder is not None:
-            from app.edits.few_shot_store import FewShotStore
             from app.core.errors import EditError
+            from app.edits.few_shot_store import FewShotStore
             try:
                 self._few_shot_store = FewShotStore(embedder=embedder)
             except EditError:
@@ -59,11 +78,14 @@ class DraftEngine:
         template_id: str,
         document_ids: list[str],
         trace_id: str | None,
+        extra_instructions: str | None = None,
     ) -> None:
         async with self._session_factory() as session:
             template = await self._registry.get_latest(template_id, session)
 
-        fingerprint = template.compute_fingerprint()
+        fingerprint = _compose_fingerprint(
+            template.compute_fingerprint(), extra_instructions
+        )
 
         log.bind(
             draft_id=draft_id,
@@ -109,7 +131,8 @@ class DraftEngine:
                     session=gen_session,
                 )
                 sections, citations = await generator.generate_all(
-                    template, fields, retrieved, fingerprint, trace_id=trace_id
+                    template, fields, retrieved, fingerprint, trace_id=trace_id,
+                    extra_instructions=extra_instructions,
                 )
 
             fields_plain = {

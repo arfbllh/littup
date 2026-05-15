@@ -4,18 +4,22 @@ from __future__ import annotations
 import asyncio
 
 import structlog
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import func, select, text
+from fastapi import APIRouter, Depends, Response, status
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.drafts import (
     CitationView,
     DraftCreateRequest,
     DraftCreateResponse,
+    DraftListResponse,
     DraftResponse,
+    DraftSummary,
     SectionView,
 )
 from app.core.errors import ConflictError, NotFoundError
+from app.db.models.chunk import Chunk
 from app.db.models.document import Document
 from app.db.models.draft import Citation, Draft, Section
 from app.db.models.edit import Edit
@@ -98,7 +102,56 @@ async def _build_draft_response(draft_id: str, session: AsyncSession) -> DraftRe
         groundedness_score=float(draft.groundedness_score) if draft.groundedness_score is not None else None,
         edit_count=int(edit_count),
         error=error_info,
+        document_ids=[str(d) for d in (draft.document_ids or [])],
+        extra_instructions=draft.extra_instructions,
     )
+
+
+@router.get("", response_model=DraftListResponse)
+async def list_drafts(
+    session: AsyncSession = Depends(get_session),
+) -> DraftListResponse:
+    # Per-draft edit count via correlated subquery — keeps the response shape
+    # consistent with GET /api/drafts/{id} (which also surfaces edit_count).
+    edit_count_sq = (
+        select(func.count())
+        .select_from(Edit)
+        .where(Edit.draft_id == Draft.id)
+        .correlate(Draft)
+        .scalar_subquery()
+    )
+    result = await session.execute(
+        select(Draft, edit_count_sq.label("edit_count"))
+        .order_by(Draft.created_at.desc())
+        .limit(200)
+    )
+    rows = result.all()
+
+    items: list[DraftSummary] = []
+    for draft, edit_count in rows:
+        ai_output = draft.ai_output or {}
+        items.append(
+            DraftSummary(
+                draft_id=str(draft.id),
+                template_id=draft.template_id,
+                template_version=draft.template_version,
+                status=draft.status,
+                document_count=len(draft.document_ids or []),
+                model_used=draft.model_used,
+                cost_usd=float(draft.cost_usd) if draft.cost_usd is not None else None,
+                groundedness_score=(
+                    float(draft.groundedness_score)
+                    if draft.groundedness_score is not None
+                    else None
+                ),
+                edit_count=int(edit_count or 0),
+                error_code=ai_output.get("error_code") if draft.status == "failed" else None,
+                generated_at=draft.generated_at,
+                created_at=draft.created_at,
+                has_extra_instructions=bool(draft.extra_instructions),
+            )
+        )
+    return DraftListResponse(items=items)
 
 
 @router.post("", response_model=DraftCreateResponse, status_code=status.HTTP_201_CREATED)
@@ -134,7 +187,9 @@ async def create_draft(
         trace_id = None
 
     repo = DraftRepo(session)
-    draft_id = await repo.create_queued(body.template_id, document_ids)
+    draft_id = await repo.create_queued(
+        body.template_id, document_ids, extra_instructions=body.extra_instructions
+    )
 
     q = JobQueue(session)
     await q.enqueue(
@@ -143,6 +198,7 @@ async def create_draft(
             "draft_id": draft_id,
             "template_id": body.template_id,
             "document_ids": document_ids,
+            "extra_instructions": body.extra_instructions,
             "trace_id": trace_id,
         },
     )
@@ -157,6 +213,113 @@ async def get_draft(
     session: AsyncSession = Depends(get_session),
 ) -> DraftResponse:
     return await _build_draft_response(draft_id, session)
+
+
+@router.delete("/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_draft(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    # Sections, citations, and edits cascade via ON DELETE CASCADE in the schema.
+    result = await session.execute(delete(Draft).where(Draft.id == draft_id))
+    if result.rowcount == 0:
+        raise NotFoundError(f"Draft {draft_id} not found", code="DRAFT_NOT_FOUND")
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class RevalidateResponse(BaseModel):
+    draft_id: str
+    revalidated: int
+    by_status: dict[str, int]
+
+
+@router.post("/{draft_id}/revalidate", response_model=RevalidateResponse)
+async def revalidate_draft(
+    draft_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> RevalidateResponse:
+    """WS-E.6: re-run Pass-3 validator for citations marked stale/unchecked.
+
+    Cheap: only flagged citations are re-checked, not the whole draft. The
+    block-edit cascade marks citations as ``stale`` when their underlying
+    chunk text changes; this endpoint clears the flag.
+    """
+    from app.api.deps import get_llm_router
+    from app.draft.validator import CitationValidator, _apply_report_to_citations
+
+    result = await session.execute(select(Draft).where(Draft.id == draft_id))
+    draft = result.scalar_one_or_none()
+    if draft is None:
+        raise NotFoundError(f"Draft {draft_id} not found", code="DRAFT_NOT_FOUND")
+
+    sections_result = await session.execute(
+        select(Section).where(Section.draft_id == draft_id)
+    )
+    sections = sections_result.scalars().all()
+
+    llm_router = await get_llm_router()
+    validator = CitationValidator(llm_router)
+
+    by_status: dict[str, int] = {}
+    revalidated_total = 0
+
+    class _CitDraft:
+        """Tiny adapter matching the shape ``_apply_report_to_citations`` expects."""
+
+        def __init__(self, citation: Citation) -> None:
+            self._c = citation
+            self.chunk_id = str(citation.chunk_id)
+            self.validation_status = citation.validation_status
+            self.validation_reason = citation.validation_reason
+
+        def commit(self) -> None:
+            self._c.validation_status = self.validation_status
+            self._c.validation_reason = self.validation_reason
+
+    for sec in sections:
+        cit_rows = await session.execute(
+            select(Citation).where(
+                Citation.section_id == sec.id,
+                Citation.validation_status.in_(("stale", "unchecked")),
+            )
+        )
+        flagged = cit_rows.scalars().all()
+        if not flagged:
+            continue
+
+        chunk_ids = [c.chunk_id for c in flagged]
+        chunks_result = await session.execute(
+            select(Chunk).where(Chunk.id.in_(chunk_ids))
+        )
+        chunks_by_id = {str(c.id): c for c in chunks_result.scalars().all()}
+
+        adapters = [_CitDraft(c) for c in flagged]
+        report = await validator.validate_section(
+            sec.ai_text or "",
+            adapters,
+            chunks_by_id,
+            draft.prompt_fingerprint,
+            None,
+        )
+        _apply_report_to_citations(report, adapters)
+        for ad in adapters:
+            ad.commit()
+            revalidated_total += 1
+            by_status[ad.validation_status] = by_status.get(ad.validation_status, 0) + 1
+
+    await session.commit()
+    log.info(
+        "draft_revalidated",
+        draft_id=draft_id,
+        revalidated=revalidated_total,
+        by_status=by_status,
+    )
+    return RevalidateResponse(
+        draft_id=draft_id,
+        revalidated=revalidated_total,
+        by_status=by_status,
+    )
 
 
 @router.post("/{draft_id}/sections/{section_name}/regenerate", response_model=SectionView)
@@ -200,7 +363,7 @@ async def regenerate_section(
             engine.regenerate_section(draft_id, section_name, trace_id, session=session),
             timeout=settings.DRAFT_REGENERATE_TIMEOUT_S,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise ConflictError(
             "Section regeneration timed out", code="REGENERATE_TIMEOUT"
         ) from exc

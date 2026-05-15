@@ -37,6 +37,7 @@ class DocumentSummary(BaseModel):
     page_count: int | None
     size_bytes: int | None
     created_at: datetime
+    has_blocks: bool = False
 
 
 class DocumentList(BaseModel):

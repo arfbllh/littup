@@ -181,7 +181,7 @@ export function UploadDropzone({ onUploaded, compact = false }: UploadDropzonePr
         >
           {dragging
             ? 'Drop files here'
-            : 'Drag PDF files here or click to browse'}
+            : 'Drag PDFs, images, or text files here or click to browse'}
         </span>
         {!compact && (
           <span style={{ fontSize: '12px', color: 'var(--paper-400)', fontFamily: 'var(--font-sans)' }}>
@@ -192,7 +192,7 @@ export function UploadDropzone({ onUploaded, compact = false }: UploadDropzonePr
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,application/pdf"
+          accept=".pdf,application/pdf,.png,image/png,.jpg,.jpeg,image/jpeg,.webp,image/webp,.tif,.tiff,image/tiff,.txt,text/plain,.md,.markdown,text/markdown,.json,application/json"
           style={{ display: 'none' }}
           onChange={onInputChange}
         />

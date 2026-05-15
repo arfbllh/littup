@@ -4,12 +4,23 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+EXTRA_INSTRUCTIONS_MAX = 2000
 
 
 class DraftCreateRequest(BaseModel):
     template_id: str
     document_ids: list[UUID]
+    extra_instructions: str | None = Field(default=None, max_length=EXTRA_INSTRUCTIONS_MAX)
+
+    @field_validator("extra_instructions", mode="before")
+    @classmethod
+    def _strip_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
 
 
 class DraftCreateResponse(BaseModel):
@@ -49,6 +60,28 @@ class DraftResponse(BaseModel):
     groundedness_score: float | None = None
     edit_count: int = 0
     error: dict[str, Any] | None
+    document_ids: list[str] = []
+    extra_instructions: str | None = None
+
+
+class DraftSummary(BaseModel):
+    draft_id: str
+    template_id: str
+    template_version: int
+    status: str
+    document_count: int
+    model_used: str | None
+    cost_usd: float | None
+    groundedness_score: float | None
+    edit_count: int
+    error_code: str | None
+    generated_at: datetime | None
+    created_at: datetime
+    has_extra_instructions: bool = False
+
+
+class DraftListResponse(BaseModel):
+    items: list[DraftSummary]
 
 
 class TemplateInfo(BaseModel):

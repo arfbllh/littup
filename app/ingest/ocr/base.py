@@ -37,7 +37,7 @@ class OCRProvider(Protocol):
         source_path: Path,
         page_num: int,
         *,
-        page_image: "np.ndarray | None" = None,
+        page_image: np.ndarray | None = None,
     ) -> PageExtraction: ...
 
 
@@ -47,6 +47,7 @@ class OCRProvider(Protocol):
 class ClassifyConfig:
     blurry_laplacian_variance_threshold: float = 100.0
     handwriting_stroke_ratio_threshold: float = 0.35
+    noise_speckle_ratio_threshold: float = 0.15
 
 
 @dataclass
@@ -96,6 +97,9 @@ def load_ocr_config(path: str | None = None) -> OCRConfig:
                 ),
                 handwriting_stroke_ratio_threshold=float(
                     classify_raw.get("handwriting_stroke_ratio_threshold", 0.35)
+                ),
+                noise_speckle_ratio_threshold=float(
+                    classify_raw.get("noise_speckle_ratio_threshold", 0.15)
                 ),
             ),
             preprocess=PreprocessConfig(

@@ -43,9 +43,10 @@ class BGEReranker(Reranker):
         loop = asyncio.get_running_loop()
 
         def _predict():
+            import torch
             pairs = [(query, doc) for doc in docs]
-            scores = model.predict(pairs)
-            return scores
+            with torch.inference_mode():
+                return model.predict(pairs)
 
         scores = await loop.run_in_executor(None, _predict)
         # Return indices sorted by descending score
@@ -75,9 +76,14 @@ class BGEReranker(Reranker):
                 raise RuntimeError("sentence_transformers not installed")
 
             start = time.time()
-            model = CrossEncoder(settings.RERANKER_MODEL)
+            model = CrossEncoder(settings.RERANKER_MODEL, device=settings.TORCH_DEVICE)
             elapsed = time.time() - start
-            logger.info("model_loaded", model=settings.RERANKER_MODEL, elapsed_seconds=elapsed)
+            logger.info(
+                "model_loaded",
+                model=settings.RERANKER_MODEL,
+                device=settings.TORCH_DEVICE,
+                elapsed_seconds=elapsed,
+            )
             return model
 
         cls._model = await loop.run_in_executor(None, _load)

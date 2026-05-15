@@ -48,14 +48,17 @@ class BGEEmbedder(Embedder):
         """Embed texts using the BGE large model."""
         loop = asyncio.get_running_loop()
         model = await self._get_model()
-        embeddings = await loop.run_in_executor(
-            None,
-            lambda: model.encode(
-                texts,
-                batch_size=settings.EMBEDDING_BATCH_SIZE,
-                normalize_embeddings=True,
-            ),
-        )
+
+        def _encode():
+            import torch
+            with torch.inference_mode():
+                return model.encode(
+                    texts,
+                    batch_size=settings.EMBEDDING_BATCH_SIZE,
+                    normalize_embeddings=True,
+                )
+
+        embeddings = await loop.run_in_executor(None, _encode)
         return embeddings.tolist()
 
     async def health(self) -> bool:
@@ -81,9 +84,14 @@ class BGEEmbedder(Embedder):
                 raise RuntimeError("sentence_transformers not installed")
 
             start = time.time()
-            model = SentenceTransformer(settings.EMBEDDING_MODEL)
+            model = SentenceTransformer(settings.EMBEDDING_MODEL, device=settings.TORCH_DEVICE)
             elapsed = time.time() - start
-            logger.info("model_loaded", model=settings.EMBEDDING_MODEL, elapsed_seconds=elapsed)
+            logger.info(
+                "model_loaded",
+                model=settings.EMBEDDING_MODEL,
+                device=settings.TORCH_DEVICE,
+                elapsed_seconds=elapsed,
+            )
             return model
 
         cls._model = await loop.run_in_executor(None, _load)

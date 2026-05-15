@@ -16,7 +16,9 @@ const statusColors: Record<CitationStatus, { fg: string; bg: string }> = {
   supported: { fg: 'var(--cite-supported)', bg: 'var(--cite-supported-bg)' },
   partial: { fg: 'var(--cite-partial)', bg: 'var(--cite-partial-bg)' },
   unsupported: { fg: 'var(--cite-unsupported)', bg: 'var(--cite-unsupported-bg)' },
+  contradicted: { fg: 'var(--cite-unsupported)', bg: 'var(--cite-unsupported-bg)' },
   unchecked: { fg: 'var(--cite-unchecked)', bg: 'var(--cite-unchecked-bg)' },
+  stale: { fg: 'var(--cite-partial)', bg: 'var(--cite-partial-bg)' },
 };
 
 function shortId(chunkId: string): string {

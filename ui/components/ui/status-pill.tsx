@@ -5,12 +5,13 @@ import React from 'react';
 type ToneBucket = 'pending' | 'running' | 'ready' | 'failed';
 
 function getTone(status: string): ToneBucket {
-  if (status === 'ready') return 'ready';
+  if (status === 'ready' || status === 'edited') return 'ready';
   if (status === 'failed') return 'failed';
-  if (status.endsWith('_running')) return 'running';
+  if (status.endsWith('_running') || status === 'generating' || status === 'regenerating') {
+    return 'running';
+  }
   // All other states: uploaded, ocr_pending, ocr_done, layout_done,
-  // chunking_done, embedding_running* → pending or running
-  if (status === 'embedding_running') return 'running';
+  // chunking_done, queued → pending
   return 'pending';
 }
 
@@ -33,7 +34,10 @@ interface StatusPillProps {
 export function StatusPill({ status, className }: StatusPillProps) {
   const tone = getTone(status);
   const { fg, bg } = toneColors[tone];
-  const isRunning = tone === 'running';
+  // Show the spinner for anything that's actively in the pipeline — including
+  // queued/`_pending` states — so the user sees that work is in progress rather
+  // than a frozen dot at "uploaded".
+  const isRunning = tone === 'running' || tone === 'pending';
 
   return (
     <span
