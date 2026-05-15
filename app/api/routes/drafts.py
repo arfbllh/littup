@@ -1,4 +1,4 @@
-"""Draft generation routes (M7 + M9)."""
+"""Draft generation routes."""
 from __future__ import annotations
 
 import asyncio
@@ -220,6 +220,13 @@ async def delete_draft(
     draft_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    # Cancel any in-flight generation first and commit so the worker's cancel
+    # watcher sees the flag. Pending jobs are flipped to 'cancelled'; running
+    # jobs get cancel_requested=TRUE and stop at the next handler checkpoint.
+    queue = JobQueue(session)
+    await queue.request_cancel_for_draft(draft_id)
+    await session.commit()
+
     # Sections, citations, and edits cascade via ON DELETE CASCADE in the schema.
     result = await session.execute(delete(Draft).where(Draft.id == draft_id))
     if result.rowcount == 0:
@@ -239,7 +246,7 @@ async def revalidate_draft(
     draft_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> RevalidateResponse:
-    """WS-E.6: re-run Pass-3 validator for citations marked stale/unchecked.
+    """Re-run Pass-3 validator for citations marked stale/unchecked.
 
     Cheap: only flagged citations are re-checked, not the whole draft. The
     block-edit cascade marks citations as ``stale`` when their underlying
@@ -334,7 +341,7 @@ async def regenerate_section(
     draft = result.scalar_one_or_none()
     if draft is None:
         raise NotFoundError(f"Draft {draft_id} not found", code="DRAFT_NOT_FOUND")
-    # Widened from status != 'ready' to allow regenerate after edit (M9)
+    # Widened from status != 'ready' to allow regenerate after edit
     if draft.status not in ("ready", "edited"):
         raise ConflictError(
             f"Draft {draft_id} is not ready (status={draft.status})",

@@ -56,7 +56,7 @@ async def test_txt_upload_bypasses_ocr_and_reaches_ocr_done(
     assert doc.status == "ocr_done"
     assert doc.mime_type == "text/plain"
     assert doc.page_count == 1
-    # NN-6: no VLM spend on a text upload
+    # no VLM spend on a text upload
     assert doc.vlm_pages_used == 0
 
     spans_q = await db_session.execute(

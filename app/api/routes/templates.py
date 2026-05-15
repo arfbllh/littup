@@ -1,4 +1,4 @@
-"""Template listing route (M7)."""
+"""Template listing route."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends

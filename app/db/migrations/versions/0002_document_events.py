@@ -1,4 +1,4 @@
-"""M3: app.document_events table for SSE replay.
+"""app.document_events table for SSE replay.
 
 Revision ID: 0002
 Revises: 0001

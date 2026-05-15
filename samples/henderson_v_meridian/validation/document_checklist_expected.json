@@ -1,0 +1,133 @@
+{
+  "schema_version": "1.0",
+  "template_id": "document_checklist",
+  "case_name": "Henderson v. Meridian Insurance Group, Inc. et al.",
+  "case_no": "2025-L-004812",
+  "description": "Ground truth for the document_checklist template applied to the Henderson v. Meridian sample.  Evaluates which documents a personal-injury/bad-faith litigation file should contain, what is present in source_docs/, and what is still missing.",
+  "expected_sections": {
+    "checklist_summary": {
+      "required_word_count_range": [
+        40,
+        120
+      ],
+      "must_cite_at_least_one_chunk": true,
+      "must_mention_present": [
+        "complaint",
+        "police report",
+        "medical records",
+        "insurance denial",
+        "witness statement",
+        "title commitment"
+      ],
+      "must_mention_missing": [
+        "expert",
+        "wage",
+        "employment"
+      ],
+      "must_not_fabricate": true
+    }
+  },
+  "present_documents": [
+    {
+      "filename": "01_complaint.pdf",
+      "category": "Pleadings",
+      "status": "present",
+      "notes": "Civil complaint filed 2025-04-28; covers all four counts"
+    },
+    {
+      "filename": "02_police_report.pdf",
+      "category": "Law Enforcement",
+      "status": "present",
+      "notes": "CCSO Incident No. CCSO-2025-0315-4471; Webb citation and narrative"
+    },
+    {
+      "filename": "03_medical_records.pdf",
+      "category": "Medical",
+      "status": "present",
+      "notes": "Certified records — Rush ER + Shirley Ryan AbilityLab; billing $87,534.62"
+    },
+    {
+      "filename": "04_insurance_denial.pdf",
+      "category": "Insurance Correspondence",
+      "status": "present",
+      "notes": "Meridian denial letter dated 2025-04-14; three stated denial grounds"
+    },
+    {
+      "filename": "witness_statement.txt",
+      "category": "Witness Evidence",
+      "status": "present",
+      "notes": "Signed statement of Maria C. Chen; eyewitness to distracted driving"
+    },
+    {
+      "filename": "05_title_commitment.pdf",
+      "category": "Property / Asset Discovery",
+      "status": "present",
+      "notes": "Preliminary title commitment on Henderson's condo — reveals AbilityLab lien"
+    }
+  ],
+  "missing_documents": [
+    {
+      "category": "Expert Evidence",
+      "description": "Expert medical witness affidavit or life-care plan (future damages)",
+      "priority": "high",
+      "notes": "Required to substantiate $200,000 future medical cost estimate in complaint"
+    },
+    {
+      "category": "Employment / Wage Loss",
+      "description": "Wage loss documentation from Harmon & Peck Engineering Associates",
+      "priority": "high",
+      "notes": "Complaint alleges $180,000 in lost wages; no employer letter or pay stubs"
+    },
+    {
+      "category": "Vehicle Evidence",
+      "description": "Accident reconstruction report or vehicle inspection report (both vehicles)",
+      "priority": "high",
+      "notes": "Complaint references 38-foot push and 45-mph impact estimate; no expert report"
+    },
+    {
+      "category": "Defendant Employment Records",
+      "description": "Swift Logistics driver qualification file for Marcus Webb (FMCSA § 391.51)",
+      "priority": "medium",
+      "notes": "Negligent entrustment count (Count III) requires proof of known driving history"
+    },
+    {
+      "category": "Demand Letter",
+      "description": "Plaintiff's March 20, 2025 demand letter to Meridian",
+      "priority": "medium",
+      "notes": "Referenced in complaint ¶ 12 and denial letter; not included in file"
+    },
+    {
+      "category": "Discovery",
+      "description": "Deposition transcripts, interrogatory responses, document productions",
+      "priority": "low",
+      "notes": "Case is pre-discovery at filing date; expected to be produced in due course"
+    },
+    {
+      "category": "Electronic Evidence",
+      "description": "Webb's navigation tablet data and Swift Logistics telematics/EDR download",
+      "priority": "medium",
+      "notes": "Mentioned in complaint; not yet produced; preservation letter should be on file"
+    }
+  ],
+  "retrieval_smoke_tests": [
+    {
+      "query": "document completeness checklist required items",
+      "expect_chunks_containing": [
+        "complaint",
+        "police",
+        "medical",
+        "denial",
+        "witness"
+      ]
+    },
+    {
+      "query": "missing documents required evidence",
+      "expect_chunks_containing": [
+        "expert",
+        "wage",
+        "employment",
+        "reconstruction"
+      ]
+    }
+  ]
+}

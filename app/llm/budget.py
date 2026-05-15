@@ -11,7 +11,7 @@ from app.db.models.llm_log import LLMRequest
 
 
 class BudgetTracker:
-    """Sliding 1-hour USD budget. Protects against runaway hosted spend (NN-6)."""
+    """Sliding 1-hour USD budget. Protects against runaway hosted spend."""
 
     def __init__(self, hourly_usd: float, session_factory: async_sessionmaker | None = None):
         self.hourly_usd = hourly_usd

@@ -1,6 +1,6 @@
 """Regression: layout must fail loudly when OCR produced no spans.
 
-WS-A.3: a doc with `page_count > 0` and zero spans used to silently transition
+A doc with `page_count > 0` and zero spans used to silently transition
 to `ready` with an empty block tree. We now mark it `failed` with
 `error_code='EMPTY_OCR_OUTPUT'` so the retry path is reachable.
 """

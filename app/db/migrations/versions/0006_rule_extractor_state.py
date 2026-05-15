@@ -1,4 +1,4 @@
-"""Add template_extractor_state table for M10 rule extractor.
+"""Add template_extractor_state table for rule extractor.
 
 Revision ID: 0006
 Revises: 0005

@@ -105,6 +105,10 @@ async def test_clean_scan_low_confidence_retries_with_preprocessing(
     monkeypatch.setattr(
         "app.ingest.ocr.paddle_ocr.PaddleProvider", lambda: paddle
     )
+    # Pin OCR_PREPROCESS_ALL=False so CLEAN_SCAN doesn't preprocess on the first
+    # pass — that's the scenario this test is designed to verify.
+    import app.settings as _app_settings
+    monkeypatch.setattr(_app_settings.settings, "OCR_PREPROCESS_ALL", False)
 
     result = await routing.route_and_extract(
         page_image=_page_image(),

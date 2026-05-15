@@ -6,7 +6,7 @@ Guidance for Claude Code (claude.ai/code) when working in this repository. For a
 
 littup turns messy legal-style PDFs into grounded, template-driven first drafts with inspectable citations, then uses operator edits to improve subsequent drafts. Single-workspace, single-operator system.
 
-Stack: Python 3.11 · FastAPI · Postgres 16 + pgvector · pdfplumber · PaddleOCR · docling · bge-large-en-v1.5 · bge-reranker-base · vLLM (Qwen 2.5) · Anthropic / OpenAI / Gemini SDKs · Next.js 15 (App Router).
+Stack: Python 3.11 · FastAPI · Postgres 16 + pgvector · pdfplumber · PaddleOCR · docling · bge-large-en-v1.5 · bge-reranker-base · Ollama (local LLM, OpenAI-compatible) · Anthropic / OpenAI / Gemini SDKs · Next.js 15 (App Router).
 
 ## Commands
 
@@ -38,7 +38,7 @@ pytest -k "test_ingest_idempotency"     # Single test
 | `app/retrieval/` | Chunk, embed, BM25+dense index, hybrid retrieve, rerank |
 | `app/draft/` | Template-driven field extraction + section generation + citation validation |
 | `app/edits/` | Structured diff capture, few-shot store, offline rule extraction |
-| `app/llm/` | Single LLM router over vLLM / Anthropic / OpenAI / Gemini |
+| `app/llm/` | Single LLM router over Ollama / Anthropic / OpenAI / Gemini |
 | `app/jobs/` | Postgres-backed job queue + worker process + APScheduler |
 | `app/api/` | Thin FastAPI routes — no business logic |
 | `app/core/` | structlog logging, typed AppError hierarchy, request-ID middleware |
@@ -60,15 +60,36 @@ pgbouncer sits in front (transaction-pooling mode). Alembic uses `DATABASE_URL_D
 
 Routes by task, not vendor. Local-first, hosted as fallback. Config in `config/router.yaml`.
 
-| Tier | Local default | Hosted fallback |
+| Tier | Local default (Ollama) | Hosted fallback |
 |------|-------------|----------------|
-| `extraction` | Qwen 2.5 14B (JSON mode) | claude-haiku-4-5 |
-| `generation` | Qwen 2.5 32B | claude-sonnet-4-5 |
-| `validation` | Qwen 2.5 7B | claude-haiku-4-5 |
+| `extraction` | `nemotron-3-super:cloud` (JSON mode) | claude-haiku-4-5 |
+| `generation` | `nemotron-3-super:cloud` | claude-sonnet-4-5 |
+| `validation` | `nemotron-3-super:cloud` | claude-haiku-4-5 |
 | `vision` | — (none locally) | claude-sonnet-4-5 vision |
-| `analysis` | Qwen 2.5 32B | claude-sonnet-4-5 |
+| `analysis` | `nemotron-3-super:cloud` | claude-sonnet-4-5 |
 
 `app/llm/` is the **only** place that imports LLM SDK libraries. All other modules call `LLMRouter`.
+
+**Local LLM = Ollama.** The `ollama` provider type uses Ollama's native `/api/generate` endpoint. Point `OLLAMA_BASE_URL` at the daemon root (no `/v1` suffix). The `:cloud` tag tells Ollama to run inference on its hosted infrastructure (free, rate-limited) rather than locally; for fully-local inference, swap the tag for one you've `ollama pull`ed (e.g. `qwen2.5:14b-instruct-q4_K_M`).
+
+```bash
+brew install ollama
+ollama serve &                                # listens on :11434
+ollama signin                                 # required once for :cloud models
+# in .env
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+**Disable a provider by clearing its env.** The router skips any provider whose required env is absent or empty:
+
+| Env | When absent/empty | Effect |
+|---|---|---|
+| `OLLAMA_BASE_URL` | not set in env | every `type: ollama` entry skipped → Anthropic handles every call |
+| `ANTHROPIC_API_KEY=""` | Anthropic | every `type: anthropic` entry skipped → only Ollama/OpenAI remain |
+| `OPENAI_API_KEY=""` | OpenAI | every `type: openai` entry skipped |
+| `GEMINI_API_KEY=""` | Gemini | every `type: gemini` entry skipped |
+
+If every provider in a tier is disabled, calls in that tier raise `LLMUnavailableError`. Worker boot logs `llm.providers_active` and `llm.providers_skipped_missing_env` so the operator can see at a glance what's wired up.
 
 ### Draft engine flow (`app/draft/engine.py`)
 

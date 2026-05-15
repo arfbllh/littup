@@ -30,7 +30,7 @@ class Chunk(Base):
     char_end: Mapped[int | None] = mapped_column(Integer)
     token_count: Mapped[int | None] = mapped_column(Integer)
     block_ids: Mapped[list | None] = mapped_column(ARRAY(Text))
-    entities: Mapped[list | None] = mapped_column(ARRAY(Text))  # NN-8: proper nouns / statute citations
+    entities: Mapped[list | None] = mapped_column(ARRAY(Text))  # proper nouns / statute citations
     prompt_fingerprint: Mapped[str | None] = mapped_column(Text)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB)
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())

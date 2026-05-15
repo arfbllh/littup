@@ -92,7 +92,7 @@ async def parse_layout(document_id: str, session: AsyncSession) -> dict[str, Any
         )
         doc = doc_row.fetchone()
 
-        # WS-A.3: if pages were rendered but OCR pulled nothing, fail loudly
+        # If pages were rendered but OCR pulled nothing, fail loudly
         # instead of silently advancing to `ready` with zero blocks.
         if not spans:
             page_count = int((doc.page_count if doc is not None else 0) or 0)

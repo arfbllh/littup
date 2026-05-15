@@ -25,8 +25,8 @@ def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS jobs")
     op.execute("CREATE SCHEMA IF NOT EXISTS llm_log")
 
-    # ── legal_en text search configuration (NN-8) ────────────────────────────
-    # Starts as a copy of 'english'. In M5 the asciiword/word/numword mappings
+    # ── legal_en text search configuration ───────────────────────────────────
+    # Starts as a copy of 'english'. The asciiword/word/numword mappings
     # will be overridden to use the 'simple' dictionary for tokens that look
     # like proper nouns, acronyms, or statute citations.
     op.execute("""
@@ -152,17 +152,17 @@ def upgrade() -> None:
     """)
     op.execute("CREATE INDEX ix_chunks_document_id ON app.chunks (document_id)")
 
-    # HNSW index — explicit params required (NN-4)
+    # HNSW index — explicit params required
     op.execute("""
         CREATE INDEX chunks_embedding_hnsw_idx ON app.chunks
             USING hnsw (embedding vector_cosine_ops)
             WITH (m = 16, ef_construction = 64)
     """)
-    # GIN on tsvector for BM25 search (NN-8)
+    # GIN on tsvector for BM25 search
     op.execute("CREATE INDEX chunks_tsv_gin_idx ON app.chunks USING GIN (text_tsv)")
-    # trigram GIN on raw text for proper-noun fuzzy search (NN-8)
+    # trigram GIN on raw text for proper-noun fuzzy search
     op.execute("CREATE INDEX chunks_text_trgm_idx ON app.chunks USING GIN (text gin_trgm_ops)")
-    # GIN on entities array for exact entity match (NN-8)
+    # GIN on entities array for exact entity match
     op.execute("CREATE INDEX chunks_entities_gin_idx ON app.chunks USING GIN (entities)")
 
     # Trigger to auto-populate text_tsv using legal_en config whenever text changes

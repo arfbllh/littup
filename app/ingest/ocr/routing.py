@@ -1,4 +1,4 @@
-"""OCR routing — classify page → select provider → call; enforce NN-6 VLM cap."""
+"""OCR routing — classify page → select provider → call; enforce VLM cap."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ async def route_and_extract(
 ) -> PageExtraction:
     """Classify the page, select the best provider, and return a PageExtraction.
 
-    VLM escalation (NN-6): the per-document vlm_pages_used counter is
+    VLM escalation: the per-document vlm_pages_used counter is
     incremented atomically before any VLM call.  If already at the cap,
     the returned extraction carries source='vlm_budget_exceeded'.
     """
@@ -58,8 +58,9 @@ async def route_and_extract(
     # Keep the deskewed-only image separate: VLM receives it instead of the
     # binarized version so handwriting recognition is not degraded (M-4).
     from app.ingest.ocr.paddle_ocr import PaddleProvider
+    from app.settings import settings as _settings
 
-    preprocess_now = page_type in (
+    preprocess_now = _settings.OCR_PREPROCESS_ALL or page_type in (
         PageType.BLURRY_SCAN,
         PageType.HANDWRITING_LIKELY,
         PageType.DEGRADED_SCAN,
@@ -94,10 +95,52 @@ async def route_and_extract(
             )
             extraction = retry_extraction
 
+    # ── Photo / diagram detection ─────────────────────────────────────────────
+    # Non-PDF images (JPEG, PNG, etc.) that yielded very little text after OCR
+    # are likely photographs or diagrams rather than text documents. Routing to
+    # the standard VLM transcription path would also return nothing — instead,
+    # ask the VLM to describe the image so it has searchable content.
+    _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+    _total_chars = sum(len(s.text) for s in extraction.spans)
+    if (
+        source_path.suffix.lower() in _IMAGE_EXTS
+        and _total_chars < cfg.sparse_text_chars_threshold
+        and llm_router is not None
+    ):
+        claimed = await _try_claim_vlm_page(doc_id, session, cfg.max_vlm_pages_per_doc)
+        if not claimed:
+            logger.info(
+                "vlm_budget_exceeded",
+                doc_id=doc_id,
+                page=page_num,
+                cap=cfg.max_vlm_pages_per_doc,
+                reason="photo_description",
+            )
+            extraction.source = "vlm_budget_exceeded"
+            return extraction
+        from app.ingest.ocr.vlm_ocr import VlmProvider
+        try:
+            return await VlmProvider(llm_router).describe_page(
+                source_path, page_num, page_image=deskewed_image
+            )
+        except BudgetExceededError:
+            await _unclaim_vlm_page(doc_id, session)
+            extraction.source = "vlm_budget_exceeded"
+            return extraction
+        except Exception as exc:
+            await _unclaim_vlm_page(doc_id, session)
+            logger.warning(
+                "vlm_describe_failed_fallback",
+                doc_id=doc_id,
+                page=page_num,
+                error=str(exc),
+            )
+            return extraction  # return sparse paddle result
+
     # ── VLM escalation check ──────────────────────────────────────────────────
     # Gate on confidence only: a low-quality page can need VLM regardless of
     # whether the classifier tagged it as blurry/handwriting/degraded. The
-    # per-document cap (NN-6) still bounds total spend.
+    # per-document cap still bounds total spend.
     needs_vlm = (
         extraction.mean_confidence < cfg.paddleocr_confidence_threshold
         and llm_router is not None
@@ -105,7 +148,7 @@ async def route_and_extract(
     if not needs_vlm:
         return extraction
 
-    # Atomic increment: fails silently when budget is exhausted (NN-6)
+    # Atomic increment: fails silently when budget is exhausted
     claimed = await _try_claim_vlm_page(doc_id, session, cfg.max_vlm_pages_per_doc)
     if not claimed:
         logger.info(
@@ -178,7 +221,7 @@ async def _try_claim_vlm_page(doc_id: str, session: AsyncSession, cap: int) -> b
 
     The commit makes the increment visible to concurrent workers before the
     VLM call fires, preventing double-spending under pgbouncer transaction-
-    pooling mode (B-2, NN-6).  A rollback on DB error resets the session so
+    pooling mode (B-2).  A rollback on DB error resets the session so
     subsequent pages can still be processed (E-2).
     """
     try:

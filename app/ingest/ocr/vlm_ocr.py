@@ -55,6 +55,23 @@ _SYSTEM_PROMPT = (
     "Group words into natural reading lines. Preserve reading order. Do not add commentary."
 )
 
+_DESCRIBE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "description": {"type": "string"},
+    },
+    "required": ["description"],
+}
+
+_DESCRIBE_SYSTEM_PROMPT = (
+    "You are a legal document analyst. Describe this image in comprehensive detail "
+    "for use in a legal case management system. Include the type of scene or document, "
+    "all visible objects, any damage or injuries, people or vehicles present, "
+    "environmental or road conditions, any visible text or signage, dates or reference "
+    "numbers if present, and any other legally relevant details. "
+    "Be thorough and precise — this description is the only searchable content for this image."
+)
+
 
 class VlmProvider:
     def __init__(self, router: "LLMRouter") -> None:
@@ -127,6 +144,89 @@ class VlmProvider:
             full_text=full_text,
             mean_confidence=mean_conf,
             source="vlm",
+        )
+
+    async def describe_page(
+        self,
+        source_path: Path,
+        page_num: int,
+        *,
+        page_image: np.ndarray | None = None,
+    ) -> PageExtraction:
+        """Describe a non-text image (photo, diagram) for retrieval.
+
+        Called when OCR yields very little text — produces a single full-page
+        span containing a detailed natural-language description of the image.
+        """
+        if page_image is None:
+            raise IngestError(
+                "VlmProvider.describe_page requires a page_image (np.ndarray)",
+                code="VLM_NO_IMAGE",
+            )
+
+        import asyncio
+        loop = asyncio.get_running_loop()
+        png_bytes = await loop.run_in_executor(None, _encode_png, page_image)
+        b64_data = base64.b64encode(png_bytes).decode("ascii")
+
+        from app.llm.types import ImagePart, Message, SamplingParams, TextPart
+
+        messages = [
+            Message(role="system", content=_DESCRIBE_SYSTEM_PROMPT),
+            Message(
+                role="user",
+                content=[
+                    ImagePart(
+                        type="image",
+                        source={
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": b64_data,
+                        },
+                    ),
+                    TextPart(type="text", text="Describe this image in detail."),
+                ],
+            ),
+        ]
+
+        try:
+            response = await self._router.generate(
+                messages,
+                task="vision",
+                schema=_DESCRIBE_OUTPUT_SCHEMA,
+                sampling=SamplingParams(max_tokens=1024, temperature=0.0),
+                cache=False,
+            )
+        except Exception as exc:
+            raise IngestError(
+                f"VLM description failed on page {page_num}: {exc}",
+                code="VLM_DESCRIBE_ERROR",
+            ) from exc
+
+        description = (response.structured or {}).get("description", "").strip()
+        spans = []
+        if description:
+            spans.append(
+                OCRSpan(
+                    text=description,
+                    page=page_num,
+                    bbox=(0.0, 0.0, 1.0, 1.0),
+                    confidence=0.90,
+                    source="vlm_description",
+                )
+            )
+
+        logger.debug(
+            "vlm_describe_done",
+            page=page_num,
+            char_count=len(description),
+        )
+        return PageExtraction(
+            page_num=page_num,
+            spans=spans,
+            full_text=description,
+            mean_confidence=0.90 if description else 0.0,
+            source="vlm_description",
         )
 
 

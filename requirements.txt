@@ -21,6 +21,7 @@ uuid7>=0.1.0
 # Config
 python-dotenv>=1.0.0
 PyYAML>=6.0.1
+python-dateutil>=2.9.0
 
 # SSE
 sse-starlette>=2.1.0
@@ -38,8 +39,10 @@ pdfplumber>=0.11.0
 Pillow>=10.3.0
 pypdf>=4.2.0
 pdf2image>=1.17.0
-paddlepaddle>=2.6.0
-paddleocr>=2.7.0
+# For GPU images, swap paddlepaddle for paddlepaddle-gpu of the same version
+# in the Dockerfile (or a requirements-gpu.txt overlay).
+paddlepaddle>=3.0.0
+paddleocr>=3.0.0
 opencv-python-headless>=4.9.0
 
 # Scheduler

@@ -19,7 +19,7 @@ class OCRSpan:
     page: int  # 1-indexed
     bbox: tuple[float, float, float, float]  # (x0, y0, x1, y1) normalised 0–1
     confidence: float
-    source: Literal["pdfplumber", "paddleocr", "vlm", "docling"]
+    source: Literal["pdfplumber", "paddleocr", "vlm", "vlm_description", "docling"]
 
 
 @dataclass
@@ -61,6 +61,9 @@ class PreprocessConfig:
 class OCRConfig:
     max_vlm_pages_per_doc: int = 20
     paddleocr_confidence_threshold: float = 0.7
+    # Images with fewer extracted characters than this are treated as photos /
+    # diagrams and routed to VLM description mode instead of text transcription.
+    sparse_text_chars_threshold: int = 50
     classify: ClassifyConfig = field(default_factory=ClassifyConfig)
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
 
@@ -91,6 +94,7 @@ def load_ocr_config(path: str | None = None) -> OCRConfig:
         _cached_config = OCRConfig(
             max_vlm_pages_per_doc=int(raw.get("max_vlm_pages_per_doc", 20)),
             paddleocr_confidence_threshold=float(raw.get("paddleocr_confidence_threshold", 0.7)),
+            sparse_text_chars_threshold=int(raw.get("sparse_text_chars_threshold", 50)),
             classify=ClassifyConfig(
                 blurry_laplacian_variance_threshold=float(
                     classify_raw.get("blurry_laplacian_variance_threshold", 100.0)

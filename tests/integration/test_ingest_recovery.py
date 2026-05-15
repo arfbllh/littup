@@ -1,4 +1,4 @@
-"""NN-1: reconciler recovery for stuck documents with idempotent re-enqueue."""
+"""Reconciler recovery for stuck documents with idempotent re-enqueue."""
 
 import uuid
 

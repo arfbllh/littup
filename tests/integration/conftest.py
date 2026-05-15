@@ -273,7 +273,7 @@ async def ocr_ingest_service(db_session, tmp_uploads_dir, cleanup_documents_and_
 
 @pytest.fixture(scope="session")
 def m5_fixture_docs():
-    """Generate M5 layout/pipeline fixture PDFs once per session.
+    """Generate layout/pipeline fixture PDFs once per session.
 
     Returns the Path to tests/fixtures/docs/. Skips gracefully if fpdf2 is absent.
     """

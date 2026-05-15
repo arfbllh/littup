@@ -1,4 +1,4 @@
-"""NN-2: atomic content-hash idempotency on POST /api/documents."""
+"""Atomic content-hash idempotency on POST /api/documents."""
 
 import asyncio
 

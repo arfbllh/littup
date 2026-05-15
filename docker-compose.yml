@@ -8,10 +8,23 @@ services:
       LOG_LEVEL: INFO
       DATABASE_URL: postgresql+asyncpg://littup:littup@pgbouncer:5432/littup
       DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
+      # HF_HOME / SENTENCE_TRANSFORMERS_HOME / PADDLE_OCR_BASE_DIR are set in
+      # the Dockerfile (all under /app/hf-cache) and the named volume below
+      # mounts at the same path so weights survive container recreation.
+      # After first warm, set HF_HUB_OFFLINE=1 in .env to skip freshness
+      # probes (hundreds of HEAD requests per load).
+      # Reach a host-side Ollama daemon from inside the container. On Linux,
+      # extra_hosts (below) maps host.docker.internal to the host gateway;
+      # on Docker Desktop (Mac/Windows) it resolves natively. Override in
+      # .env if you run Ollama somewhere else.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - blob-data:/app/data
+      - hf-cache:/app/hf-cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -27,10 +40,14 @@ services:
       LOG_LEVEL: INFO
       DATABASE_URL: postgresql+asyncpg://littup:littup@pgbouncer:5432/littup
       DATABASE_URL_DIRECT: postgresql+asyncpg://littup:littup@postgres:5432/littup
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - blob-data:/app/data
+      - hf-cache:/app/hf-cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,3 +95,4 @@ services:
 volumes:
   postgres-data:
   blob-data:
+  hf-cache:

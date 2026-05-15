@@ -17,8 +17,34 @@ from app.llm.errors import (
 from app.llm.log_repo import LLMLogRepo
 from app.llm.providers.base import LLMProvider
 from app.llm.types import LLMResponse, Message, SamplingParams, TaskTier
+from app.settings import settings
 
 log = structlog.get_logger(__name__)
+
+
+def _preview_content(content, limit: int) -> str:
+    if isinstance(content, str):
+        text = content
+    else:
+        parts: list[str] = []
+        for p in content:
+            t = getattr(p, "type", None)
+            if t == "text":
+                parts.append(getattr(p, "text", ""))
+            elif t == "image":
+                parts.append("<image>")
+        text = "\n".join(parts)
+    if len(text) > limit:
+        return text[:limit] + f"…[+{len(text) - limit} chars]"
+    return text
+
+
+def _dump_messages(messages: list[Message], limit: int) -> list[dict]:
+    return [
+        {"role": m.role, "len": len(m.content) if isinstance(m.content, str) else None,
+         "content": _preview_content(m.content, limit)}
+        for m in messages
+    ]
 
 
 class LLMRouter:
@@ -120,10 +146,46 @@ class LLMRouter:
             current_messages = list(messages)
             for attempt in range(attempts):
                 t0 = time.monotonic()
+                if settings.LLM_LOG_PROMPTS:
+                    log.info(
+                        "llm.request",
+                        trace_id=trace_id,
+                        tier=task,
+                        provider=provider_name,
+                        model=provider.model,
+                        attempt=attempt,
+                        schema=bool(schema),
+                        max_tokens=sampling.max_tokens,
+                        temperature=sampling.temperature,
+                        message_count=len(current_messages),
+                        messages=_dump_messages(
+                            current_messages, settings.LLM_LOG_PROMPTS_MAX_CHARS
+                        ),
+                    )
                 try:
                     response = await provider.generate(
                         current_messages, schema=schema, sampling=sampling
                     )
+                    if settings.LLM_LOG_PROMPTS:
+                        text_preview = response.text or ""
+                        if len(text_preview) > settings.LLM_LOG_PROMPTS_MAX_CHARS:
+                            text_preview = (
+                                text_preview[: settings.LLM_LOG_PROMPTS_MAX_CHARS]
+                                + f"…[+{len(response.text) - settings.LLM_LOG_PROMPTS_MAX_CHARS} chars]"
+                            )
+                        log.info(
+                            "llm.response",
+                            trace_id=trace_id,
+                            tier=task,
+                            provider=provider_name,
+                            model=response.model_used,
+                            tokens_in=response.tokens_in,
+                            tokens_out=response.tokens_out,
+                            latency_ms=int((time.monotonic() - t0) * 1000),
+                            finish_reason=response.finish_reason,
+                            text=text_preview,
+                            structured=response.structured,
+                        )
                     response.cached_hit = False
                     latency_ms = int((time.monotonic() - t0) * 1000)
                     response.latency_ms = response.latency_ms or latency_ms
@@ -156,8 +218,17 @@ class LLMRouter:
                             error=str(e),
                         )
                         # Append stricter instruction so the retry has a real chance.
+                        # Providers iterate as Message objects (m.role / m.content),
+                        # so wrap the nudge in a Message rather than a raw dict.
+                        from app.llm.types import Message as _Msg
                         current_messages = list(messages) + [
-                            {"role": "user", "content": "Return only valid JSON matching the schema exactly. No explanation, no markdown, no extra text."}
+                            _Msg(
+                                role="user",
+                                content=(
+                                    "Return only valid JSON matching the schema "
+                                    "exactly. No explanation, no markdown, no extra text."
+                                ),
+                            )
                         ]
                         continue
                     self.log_repo.record(

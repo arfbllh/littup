@@ -43,8 +43,9 @@ migrate-down:
 	alembic downgrade -1
 
 reset-db:
-	docker compose exec postgres psql -U littup -c "DROP DATABASE IF EXISTS littup;" || true
-	docker compose exec postgres psql -U littup -c "CREATE DATABASE littup;" || true
+	docker compose exec -T postgres psql -U littup -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'littup' AND pid <> pg_backend_pid();" || true
+	docker compose exec -T postgres psql -U littup -d postgres -c "DROP DATABASE IF EXISTS littup;"
+	docker compose exec -T postgres psql -U littup -d postgres -c "CREATE DATABASE littup;"
 	alembic upgrade head
 
 # ── Data ─────────────────────────────────────────────────────────────────────

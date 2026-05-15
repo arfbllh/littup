@@ -1,65 +1,68 @@
 id: title_review_summary
 display_name: "Title Review Summary"
-description: "Summarizes property ownership, encumbrances, and chain of title"
+description: "Summarizes property ownership, encumbrances, and chain of title from recorded instruments"
 system_prompt: |
-  You are a real estate title analyst reviewing title reports and deed records.
+  You are a title analyst reviewing preliminary title commitments, deed records, and other recorded instruments.
+  This template may be used in real estate transactions or in litigation discovery to identify liens and
+  encumbrances against a party's property (e.g., medical liens, judgment liens, or mortgages).
   Extract property information accurately, preserving names, dates, and dollar amounts exactly as stated.
-  Present table-shaped data faithfully — list all parties, encumbrances, and liens separately.
-  Cite specific document references for every factual claim.
+  List all parties, instruments, document numbers, and recorded dates faithfully.
+  Highlight any liens or encumbrances that have litigation significance (medical liens, judgment liens).
+  Cite specific document references and recording numbers for every factual claim.
   When information is not present in the documents, state "Not stated in provided documents."
 appended_rules: []
 retrieval_queries:
-  property_description: "property address legal description parcel"
-  owners: "owner grantee grantor title holder"
-  encumbrances: "encumbrance restriction covenant easement"
-  liens: "lien mortgage deed of trust judgment"
-  easements: "easement right of way access utility"
-  property_summary: "property description location size"
-  chain_of_title: "chain of title deed transfer conveyance history"
-  encumbrance_summary: "encumbrances liens easements restrictions"
+  property_description: "title commitment property address legal description parcel PIN condominium declaration"
+  owners: "warranty deed grantor grantee consideration purchase price recorded document number chain title"
+  encumbrances: "schedule exceptions restrictions covenants condominium declaration real estate taxes"
+  liens: "mortgage medical lien judgment creditor recorded document number amount BMO Shirley Ryan"
+  easements: "easement utility ComEd Commonwealth Edison right of way access rear lot line"
+  property_summary: "property address parcel identification title commitment insured amount"
+  chain_of_title: "deed transfer warranty deed grantor grantee consideration recorded document number"
+  encumbrance_summary: "mortgage lien medical judgment easement encumbrance restriction covenant recorded"
 extraction_schema:
   - name: property_description
     type: string
-    description: "Legal description or address of the property"
+    description: "Legal description or address of the property as stated in the title commitment"
     retrieval_key: property_description
     required: true
   - name: owners
     type: list[party]
-    description: "Current and historical owners of record"
+    description: "Current and historical owners of record — include instrument type, document number, date, and consideration for each"
     retrieval_key: owners
     required: true
   - name: encumbrances
     type: list[string]
-    description: "All encumbrances, restrictions, and covenants"
+    description: "All encumbrances, restrictions, and covenants (e.g., condominium declaration, unpaid taxes)"
     retrieval_key: encumbrances
     required: false
   - name: liens
     type: list[string]
-    description: "All liens, mortgages, and deeds of trust"
+    description: "All liens, mortgages, and deeds of trust — include mortgagee, document number, date, and amount"
     retrieval_key: liens
     required: false
   - name: easements
     type: list[string]
-    description: "All easements and rights-of-way"
+    description: "All easements and rights-of-way — include beneficiary, document number, and date"
     retrieval_key: easements
     required: false
 sections:
   - name: property_summary
-    description: "Overview of the property including location and key characteristics"
+    description: "Overview of the property including address, legal description, parcel ID, and current owner"
     retrieval_key: property_summary
     target_length_min: 50
     target_length_max: 200
     validators: [cites_at_least_one]
   - name: chain_of_title
-    description: "Chronological summary of ownership transfers"
+    description: "Chronological summary of all ownership transfers with instrument type, document number, date, and consideration for each conveyance"
     retrieval_key: chain_of_title
     target_length_min: 100
     target_length_max: 400
     validators: [cites_at_least_one]
   - name: encumbrance_summary
-    description: "Summary of all encumbrances, liens, and easements affecting the property"
+    description: "Summary of all encumbrances, liens, and easements — note document numbers, amounts, and any litigation significance (e.g., medical liens from treating providers)"
     retrieval_key: encumbrance_summary
-    target_length_min: 50
+    target_length_min: 80
     target_length_max: 300
     validators: [cites_at_least_one]
 validators:

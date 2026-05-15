@@ -13,7 +13,7 @@ log = structlog.get_logger(__name__)
 
 
 class LLMLogRepo:
-    """Fire-and-forget logger for llm_log.llm_requests (NN-12).
+    """Fire-and-forget logger for llm_log.llm_requests.
 
     `record()` returns immediately; the DB write happens on the event loop.
     Failures are logged but not raised — logging must never break a call.

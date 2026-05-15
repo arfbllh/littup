@@ -13,6 +13,7 @@ class JobKind(StrEnum):
     FEW_SHOT_INDEX = "few_shot_index"
     DRAFT_GENERATION = "draft_generation"
     REEMBED_CHUNKS = "reembed_chunks"
+    PAGE_REEXTRACT = "page_reextract"
 
 
 # Handlers registered by each milestone as they are implemented.

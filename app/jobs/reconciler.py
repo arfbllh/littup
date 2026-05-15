@@ -27,7 +27,7 @@ class Reconciler:
         self._session = session
 
     async def reclaim_stuck_jobs(self) -> int:
-        """Re-queue running jobs whose heartbeat has expired (NN-1)."""
+        """Re-queue running jobs whose heartbeat has expired."""
         queue = JobQueue(self._session)
         count = await queue.reclaim_stuck(timeout_seconds=settings.JOB_STALE_TIMEOUT)
         if count:
@@ -35,7 +35,7 @@ class Reconciler:
         return count
 
     async def find_partial_documents(self) -> int:
-        """Re-enqueue the missing pipeline stage for stuck documents (NN-1).
+        """Re-enqueue the missing pipeline stage for stuck documents.
 
         Skips documents that already have a pending or running job so that
         reclaim_stuck_jobs (which resets stuck jobs back to pending) and this
@@ -71,7 +71,7 @@ class Reconciler:
         return count
 
     async def find_unembedded_edits(self) -> list[str]:
-        """Return edit IDs whose few-shot embedding has not yet been indexed (NN-11)."""
+        """Return edit IDs whose few-shot embedding has not yet been indexed."""
         result = await self._session.execute(
             text("""
                 SELECT id FROM app.edits
@@ -86,7 +86,7 @@ class Reconciler:
         return ids
 
     async def reconcile_unembedded_edits(self) -> int:
-        """Re-enqueue FEW_SHOT_INDEX jobs for edits that slipped through (NN-11).
+        """Re-enqueue FEW_SHOT_INDEX jobs for edits that slipped through.
 
         Dedup key matches the primary-path key in EditService.save_edit so the
         queue's ON CONFLICT DO NOTHING prevents duplicates.

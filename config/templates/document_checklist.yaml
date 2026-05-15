@@ -1,27 +1,32 @@
 id: document_checklist
 display_name: "Document Checklist"
-description: "Stub checklist summarizing document completeness"
+description: "Checklist of present and missing documents for a personal-injury litigation file"
 system_prompt: |
-  You are a document reviewer checking a set of legal documents for completeness.
-  List what is present and what appears to be missing.
+  You are a litigation paralegal reviewing a personal-injury / insurance bad-faith case file for document completeness.
+  A complete PI litigation file typically contains: pleadings (complaint, answer), law enforcement reports,
+  medical records and billing, insurance correspondence (denial letters, coverage positions), witness statements,
+  expert reports (medical, accident reconstruction), wage/employment loss documentation, and discovery materials.
+  List every document that IS present in the provided excerpts by category.
+  Then list the categories of documents that appear to be MISSING from the file.
   Cite specific document references for every item mentioned.
+  Do not fabricate or assume documents exist that are not in the evidence.
 appended_rules: []
 retrieval_queries:
-  checklist_summary: "document completeness checklist required items"
+  checklist_summary: "complaint police report medical records billing injury diagnosis insurance denial witness statement title commitment expert wage employment missing documents personal injury litigation file completeness"
 extraction_schema: []
 sections:
   - name: checklist_summary
-    description: "Summary of document completeness and any missing items"
+    description: "Summary listing documents present in the file by category, followed by categories that appear missing. Must flag expert evidence, wage loss, and employment records as missing if not present."
     retrieval_key: checklist_summary
-    target_length_min: 40
-    target_length_max: 120
+    target_length_min: 80
+    target_length_max: 300
     validators: [cites_at_least_one, length_between]
 validators:
   - id: length_between
     args:
       section: checklist_summary
-      min: 40
-      max: 120
+      min: 80
+      max: 300
   - id: cites_at_least_one
     args:
       section: checklist_summary

@@ -1,7 +1,7 @@
 """Integration: full ingestion pipeline — upload → OCR → layout → chunk → embed → ready.
 
 Uses StubEmbedder (zero vectors) so no model download is required in CI.
-M5 acceptance criteria:
+Acceptance criteria:
   - status reaches 'ready'
   - all chunks have non-null embeddings (1024-d)
   - at least one chunk has non-empty entities array

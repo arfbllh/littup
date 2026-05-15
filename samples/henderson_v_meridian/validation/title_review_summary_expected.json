@@ -1,0 +1,147 @@
+{
+  "schema_version": "1.0",
+  "template_id": "title_review_summary",
+  "case_name": "Henderson v. Meridian Insurance Group, Inc. et al.",
+  "property_address": "2231 N. Kenmore Avenue, Unit 3S, Chicago, IL 60614",
+  "parcel_id": "14-28-211-043-1003",
+  "description": "Ground truth for the title_review_summary template applied to the Henderson preliminary title commitment (05_title_commitment.pdf).  Counsel ordered this report during discovery to identify liens against plaintiff's property; the Shirley Ryan AbilityLab medical lien (Doc. No. 2025-IL-0419322) was the key finding.",
+  "expected_extraction": {
+    "property_description": "Unit 3S in 2231 North Kenmore Condominium, as delineated and defined in the Declaration of Condominium recorded February 14, 2004 as Document No. 0404402811 in Cook County, Illinois (Parcel 14-28-211-043-1003); property address 2231 N. Kenmore Avenue, Unit 3S, Chicago, IL 60614",
+    "owners": [
+      {
+        "name": "James William Henderson",
+        "role": "Current Owner of Record",
+        "instrument": "Warranty Deed",
+        "document_no": "1916320541",
+        "date": "2019-06-12",
+        "consideration": "$449,000"
+      },
+      {
+        "name": "Daniel P. Kowalski and Lauren A. Kowalski",
+        "role": "Prior Owner",
+        "instrument": "Warranty Deed",
+        "document_no": "1326140882",
+        "date": "2013-09-18",
+        "consideration": "$398,500"
+      },
+      {
+        "name": "Philip A. Riordan and Susan M. Riordan",
+        "role": "Prior Owner",
+        "instrument": "Warranty Deed",
+        "document_no": "0418831044",
+        "date": "2004-06-30",
+        "consideration": "$312,000"
+      }
+    ],
+    "encumbrances": [
+      "Declaration of Condominium recorded 2004-02-14, Doc. No. 0404402811 (all restrictions and bylaws, including prohibition on commercial use and short-term rentals under 30 days — § 14(c))",
+      "General real estate taxes for 2024 (PIN 14-28-211-043-1003), due 2025, not yet paid as of commitment date"
+    ],
+    "liens": [
+      "Mortgage in favor of BMO Harris Bank N.A. (f/k/a First Midwest Bank), dated 2019-06-14, recorded 2019-06-18 as Document No. 1906918270, original amount $385,000",
+      "Medical lien in favor of Shirley Ryan AbilityLab, filed 2025-04-30 as Document No. 2025-IL-0419322, amount $63,420.00"
+    ],
+    "easements": [
+      "Utility easement in favor of Commonwealth Edison Company (ComEd) for electric lines along the rear lot line of the subject building's ground parcel, recorded 1962-08-03 as Document No. 1962-IL-6214800"
+    ]
+  },
+  "expected_sections": {
+    "property_summary": {
+      "must_mention": [
+        "2231 N. Kenmore",
+        "Unit 3S",
+        "Chicago",
+        "condominium",
+        "14-28-211-043-1003"
+      ]
+    },
+    "chain_of_title": {
+      "must_mention": [
+        "James William Henderson",
+        "2019",
+        "Kowalski",
+        "Riordan",
+        "2231 Kenmore LLC",
+        "$449,000"
+      ]
+    },
+    "encumbrance_summary": {
+      "must_mention": [
+        "BMO Harris",
+        "$385,000",
+        "Shirley Ryan AbilityLab",
+        "$63,420",
+        "ComEd",
+        "easement",
+        "2025-IL-0419322"
+      ],
+      "must_not_mention": [
+        "no liens",
+        "unencumbered"
+      ]
+    }
+  },
+  "source_document_index": [
+    {
+      "filename": "05_title_commitment.pdf",
+      "type": "preliminary_title_commitment",
+      "issuer": "Chicago Title Insurance Company",
+      "commitment_no": "CTIC-2025-IL-088341",
+      "effective_date": "2025-05-01",
+      "key_facts": [
+        "Current owner: James William Henderson (Warranty Deed 1916320541, 2019-06-12)",
+        "Mortgage: BMO Harris Bank N.A., Doc. No. 1906918270, $385,000",
+        "Medical lien: Shirley Ryan AbilityLab, Doc. No. 2025-IL-0419322, $63,420",
+        "ComEd utility easement: Doc. No. 1962-IL-6214800",
+        "Condominium declaration restrictions: Doc. No. 0404402811",
+        "Full chain of title from 2004 developer deed through current owner"
+      ]
+    }
+  ],
+  "retrieval_smoke_tests": [
+    {
+      "query": "property address legal description parcel",
+      "expect_chunks_containing": [
+        "2231",
+        "Kenmore",
+        "14-28-211-043-1003",
+        "condominium"
+      ]
+    },
+    {
+      "query": "owner grantee grantor title holder deed transfer",
+      "expect_chunks_containing": [
+        "Henderson",
+        "Kowalski",
+        "Riordan",
+        "Warranty Deed"
+      ]
+    },
+    {
+      "query": "lien mortgage deed of trust judgment",
+      "expect_chunks_containing": [
+        "BMO Harris",
+        "385,000",
+        "Shirley Ryan",
+        "63,420"
+      ]
+    },
+    {
+      "query": "easement right of way access utility",
+      "expect_chunks_containing": [
+        "ComEd",
+        "Commonwealth Edison",
+        "rear lot line"
+      ]
+    },
+    {
+      "query": "encumbrance restriction covenant condominium",
+      "expect_chunks_containing": [
+        "Declaration",
+        "0404402811",
+        "commercial",
+        "short-term"
+      ]
+    }
+  ]
+}

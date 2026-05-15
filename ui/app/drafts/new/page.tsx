@@ -22,7 +22,7 @@ export default function NewDraftPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // WS-F.5: prefill from "Regenerate with changes" on an existing draft.
+  // Prefill from "Regenerate with changes" on an existing draft.
   // We only prefill once on mount — the user is free to mutate from there.
   useEffect(() => {
     const tpl = searchParams.get('template_id');

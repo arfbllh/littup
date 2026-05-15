@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PageWithBboxes } from '@/components/PageWithBboxes';
 import { getDocument, getBlocks, retryDocument, deleteDocument, patchBlockText } from '@/lib/api';
+import { ReextractDialog, useReextractSessionStatus } from '@/components/ReextractDialog';
 import { useDocumentEvents } from '@/lib/hooks/useDocumentEvents';
 import type { Block } from '@/lib/types';
 
@@ -91,6 +92,7 @@ export default function DocumentDetailPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [hoveredBlock, setHoveredBlock] = useState<Block | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [reextractDialogOpen, setReextractDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [showEventLog, setShowEventLog] = useState(false);
@@ -116,7 +118,7 @@ export default function DocumentDetailPage() {
     id ? `doc:${id}` : null,
     () => getDocument(id),
     {
-      // SWR runs as a slow safety-net behind SSE (Inv #10). When SSE is healthy
+      // SWR runs as a slow safety-net behind SSE. When SSE is healthy
       // the storm-guard in useDocumentEvents shuts up; if SSE truly drops, the
       // hook starts its own 5 s polling. This 10 s tick is just a final
       // belt-and-braces for slow proxies that buffer the stream.
@@ -149,8 +151,8 @@ export default function DocumentDetailPage() {
   }
 
   // Mutate the SWR cache the moment we see a `status_changed` event so the
-  // timeline animates without waiting for the next GET (Inv #10 friendly:
-  // SWR still polls, but the UI is no longer behind it).
+  // timeline animates without waiting for the next GET (SWR still polls, but
+  // the UI is no longer behind it).
   const onStatusChanged = useCallback(
     (next: string) => {
       mutateDoc(
@@ -173,7 +175,7 @@ export default function DocumentDetailPage() {
   const currentPageBlocks = blocks.filter(
     (b) => currentPage >= b.page_start && currentPage <= b.page_end,
   );
-  // WS-A.4: a `ready` doc with zero blocks slid past the empty-OCR gate before
+  // A `ready` doc with zero blocks slid past the empty-OCR gate before
   // we shipped the guard. Surface a retry path so the operator isn't stuck.
   const stuckEmpty =
     status === 'ready' && doc?.status === 'ready' && blocks.length === 0;
@@ -197,7 +199,9 @@ export default function DocumentDetailPage() {
     }
   }
 
-  async function handleRetry(opts: { force?: boolean } = {}) {
+  async function handleRetry(
+    opts: { force?: boolean; provider?: 'pdfplumber' | 'paddleocr' | 'auto' } = {},
+  ) {
     if (!doc || retrying) return;
     setRetrying(true);
     try {
@@ -214,6 +218,13 @@ export default function DocumentDetailPage() {
       setRetrying(false);
     }
   }
+
+  const isPdf = doc?.mime_type === 'application/pdf';
+  // The new workflow lives in ReextractDialog: select pages → preview diff →
+  // accept-or-discard. Only show the launcher when the doc is in a terminal
+  // state so we don't fight an in-flight pipeline run.
+  const canOpenReextract =
+    !!doc && (doc.status === 'ready' || doc.status === 'failed');
 
   function handleExport() {
     if (!doc) return;
@@ -263,6 +274,12 @@ export default function DocumentDetailPage() {
                 {retrying ? 'Retrying…' : 'Retry'}
               </Button>
             )}
+            {canOpenReextract && (
+              <ReextractTriggerButton
+                documentId={id}
+                onClick={() => setReextractDialogOpen(true)}
+              />
+            )}
             <Button variant="ghost" size="sm" icon={Download} onClick={handleExport}>
               Export JSON
             </Button>
@@ -300,6 +317,12 @@ export default function DocumentDetailPage() {
           {doc.mime_type && <span className="mono-id">{doc.mime_type}</span>}
           {doc.page_count && (
             <span className="mono-id">{doc.page_count} pages</span>
+          )}
+          {(doc.ocr_provider_used || doc.ocr_provider_override) && (
+            <span className="mono-id" title="Active OCR engine for this document">
+              ocr:{doc.ocr_provider_override ?? doc.ocr_provider_used}
+              {doc.ocr_provider_override ? ' (override)' : ''}
+            </span>
           )}
         </div>
       )}
@@ -991,6 +1014,22 @@ export default function DocumentDetailPage() {
         </div>
       </div>
 
+      {doc && (
+        <ReextractDialog
+          open={reextractDialogOpen}
+          documentId={doc.document_id}
+          pageCount={pageCount}
+          isPdf={isPdf}
+          onClose={() => setReextractDialogOpen(false)}
+          onAccepted={() => {
+            // Layout/chunking/embedding will re-run; trigger an immediate
+            // SWR refetch so the timeline reflects the new pipeline run.
+            void mutateDoc(undefined, { revalidate: true });
+            void mutateBlocks();
+          }}
+        />
+      )}
+
       <ConfirmDialog
         open={confirmingDelete}
         title="Delete document?"
@@ -1014,5 +1053,55 @@ export default function DocumentDetailPage() {
         }}
       />
     </div>
+  );
+}
+
+function ReextractTriggerButton({
+  documentId,
+  onClick,
+}: {
+  documentId: string;
+  onClick: () => void;
+}) {
+  const { active, status, done, total } = useReextractSessionStatus(documentId);
+
+  if (active && (status === 'pending' || status === 'running')) {
+    return (
+      <Button
+        variant="secondary"
+        size="sm"
+        icon={RotateCw}
+        onClick={onClick}
+        title="Re-extract is running in the background — click to view progress."
+      >
+        Re-extracting{total > 0 ? ` (${done}/${total})` : ''}…
+      </Button>
+    );
+  }
+
+  if (active && status === 'ready') {
+    return (
+      <Button
+        variant="primary"
+        size="sm"
+        icon={Check}
+        onClick={onClick}
+        title="Re-extract finished — review the diffs and pick what to keep."
+      >
+        Review re-extract{total > 0 ? ` (${total} page${total === 1 ? '' : 's'})` : ''}
+      </Button>
+    );
+  }
+
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      icon={RotateCw}
+      onClick={onClick}
+      title="Pick pages to re-OCR with a different engine and preview the diff before applying."
+    >
+      Re-extract pages…
+    </Button>
   );
 }

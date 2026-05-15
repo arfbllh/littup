@@ -28,7 +28,7 @@ class Edit(Base):
     diff: Mapped[dict | None] = mapped_column(JSONB)
     context: Mapped[dict | None] = mapped_column(JSONB)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
-    few_shot_indexed_at: Mapped[datetime | None] = mapped_column(TZ)  # NN-11: NULL until indexed
+    few_shot_indexed_at: Mapped[datetime | None] = mapped_column(TZ)  # NULL until indexed
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
 
     draft: Mapped["Draft"] = relationship("Draft", back_populates="edits")  # noqa: F821

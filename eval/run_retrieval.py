@@ -1,6 +1,6 @@
 """Retrieval eval: measures Recall@5, Recall@10, and MRR across 30 queries.
 
-Checks NN-8: legal_term recall@10 must be >= 0.85.
+Checks that legal_term recall@10 must be >= 0.85.
 
 Usage:
     python eval/run_retrieval.py
@@ -23,7 +23,7 @@ log = structlog.get_logger(__name__)
 
 QUERIES_PATH = Path(__file__).parent / "data" / "retrieval_queries.jsonl"
 
-NN8_LEGAL_TERM_THRESHOLD = 0.85
+LEGAL_TERM_RECALL_THRESHOLD = 0.85
 
 
 def _load_queries(limit: int | None = None) -> list[dict]:
@@ -123,7 +123,7 @@ def _build_markdown(metrics: dict) -> str:
         | Tag | Recall@5 | Recall@10 | MRR | N |
         |-----|----------|-----------|-----|---|
         {tag_rows}
-        > NN-8 threshold: legal_term Recall@10 >= {NN8_LEGAL_TERM_THRESHOLD:.0%}
+        > Threshold: legal_term Recall@10 >= {LEGAL_TERM_RECALL_THRESHOLD:.0%}
     """)
 
 
@@ -234,14 +234,13 @@ async def run(
 
     metrics = _compute_metrics(results)
 
-    # NN-8 check
     lt_recall10 = metrics.get("per_tag", {}).get("legal_term", {}).get("recall_at_10")
-    if lt_recall10 is not None and lt_recall10 < NN8_LEGAL_TERM_THRESHOLD:
+    if lt_recall10 is not None and lt_recall10 < LEGAL_TERM_RECALL_THRESHOLD:
         log.warning(
-            "eval.retrieval.nn8_violation",
+            "eval.retrieval.legal_term_threshold_violation",
             legal_term_recall_at_10=lt_recall10,
-            threshold=NN8_LEGAL_TERM_THRESHOLD,
-            message="legal_term Recall@10 below NN-8 threshold of 0.85",
+            threshold=LEGAL_TERM_RECALL_THRESHOLD,
+            message="legal_term Recall@10 below threshold of 0.85",
         )
 
     markdown = _build_markdown(metrics)

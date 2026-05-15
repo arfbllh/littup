@@ -1,4 +1,4 @@
-"""Embedding provider interface. Real bge-large wiring lives in M6."""
+"""Embedding provider interface."""
 from __future__ import annotations
 
 import asyncio
@@ -42,7 +42,7 @@ class BGEEmbedder(Embedder):
 
     name = "bge"
     dim = 1024
-    _model = None
+    _holder: dict = {"model": None, "model__future": None}
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts using the BGE large model."""
@@ -71,31 +71,38 @@ class BGEEmbedder(Embedder):
 
     @classmethod
     async def _get_model(cls):
-        """Lazy-load the sentence-transformers model (process-level singleton)."""
-        if cls._model is not None:
-            return cls._model
+        """Lazy-load the sentence-transformers model (process-level singleton).
 
-        loop = asyncio.get_running_loop()
+        Concurrent first callers all await the same shared load so we only
+        download and instantiate the model once, not once per parallel query.
+        """
+        from app.llm.reranker_model import _shared_load
 
-        def _load():
+        async def _load():
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError:
                 raise RuntimeError("sentence_transformers not installed")
 
-            start = time.time()
-            model = SentenceTransformer(settings.EMBEDDING_MODEL, device=settings.TORCH_DEVICE)
-            elapsed = time.time() - start
-            logger.info(
-                "model_loaded",
-                model=settings.EMBEDDING_MODEL,
-                device=settings.TORCH_DEVICE,
-                elapsed_seconds=elapsed,
-            )
-            return model
+            loop = asyncio.get_running_loop()
 
-        cls._model = await loop.run_in_executor(None, _load)
-        return cls._model
+            def _blocking():
+                start = time.time()
+                model = SentenceTransformer(
+                    settings.EMBEDDING_MODEL, device=settings.TORCH_DEVICE
+                )
+                elapsed = time.time() - start
+                logger.info(
+                    "model_loaded",
+                    model=settings.EMBEDDING_MODEL,
+                    device=settings.TORCH_DEVICE,
+                    elapsed_seconds=elapsed,
+                )
+                return model
+
+            return await loop.run_in_executor(None, _blocking)
+
+        return await _shared_load(cls._holder, "model", _load)
 
 
 class OpenAIEmbedder(Embedder):

@@ -1,6 +1,7 @@
 """SectionGenerator — Pass 2 of the draft engine: prose generation with citations."""
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 
@@ -47,6 +48,10 @@ class SectionGenerator:
         self._few_shot_store = few_shot_store
         self._current_template_id = current_template_id
         self._session = session
+        # Parallel generate_all shares one AsyncSession; serialize the brief
+        # few-shot DB lookup so concurrent SQLAlchemy calls don't collide.
+        # The slow LLM call still runs in parallel.
+        self._session_lock = asyncio.Lock()
         self.tokens_in: int = 0
         self.tokens_out: int = 0
         self.cost_usd: float = 0.0
@@ -66,9 +71,6 @@ class SectionGenerator:
             for chunk in chunks:
                 all_chunk_ids.add(chunk.id)
 
-        all_sections: list[SectionDraft] = []
-        all_citations: list[CitationDraft] = []
-
         # WS-F: prefix operator's custom instructions so they show up in the
         # user prompt for every section. Wrapped in a clear header so the model
         # treats them as constraints, not source text.
@@ -77,14 +79,22 @@ class SectionGenerator:
             if extra_instructions
             else None
         )
-        for section_spec in template.sections:
-            section_draft, citations = await self.generate_section(
-                section_spec, template, fields, retrieved, all_chunk_ids, trace_id,
-                extra_instructions=prefix,
-            )
-            all_sections.append(section_draft)
-            all_citations.extend(citations)
 
+        # Sections are independent; fan out so total wall time ≈ slowest LLM
+        # call rather than the sum across all sections.
+        specs = list(template.sections)
+        results = await asyncio.gather(
+            *[
+                self.generate_section(
+                    spec, template, fields, retrieved, all_chunk_ids, trace_id,
+                    extra_instructions=prefix,
+                )
+                for spec in specs
+            ]
+        )
+
+        all_sections: list[SectionDraft] = [r[0] for r in results]
+        all_citations: list[CitationDraft] = [c for r in results for c in r[1]]
         return all_sections, all_citations
 
     async def generate_section(
@@ -100,7 +110,7 @@ class SectionGenerator:
 
         system_msg = Message(role="system", content=system_content)
 
-        evidence_lines = [f"[chunk:{c.id}] {c.text[:600]}" for c in chunks]
+        evidence_lines = [f"[chunk:{c.id}] {c.text[:1000]}" for c in chunks]
         evidence = "\n\n".join(evidence_lines) if evidence_lines else "No relevant chunks retrieved."
 
         fields_summary = {
@@ -131,14 +141,15 @@ class SectionGenerator:
             from app.settings import settings as _settings
 
             chunk_context = chunks_to_context(chunks)
-            examples = await self._few_shot_store.retrieve(
-                self._current_template_id,
-                section_spec.name,
-                session=self._session,
-                field_type="section",
-                chunk_context=chunk_context,
-                top_k=_settings.FEW_SHOT_TOP_K,
-            )
+            async with self._session_lock:
+                examples = await self._few_shot_store.retrieve(
+                    self._current_template_id,
+                    section_spec.name,
+                    session=self._session,
+                    field_type="section",
+                    chunk_context=chunk_context,
+                    top_k=_settings.FEW_SHOT_TOP_K,
+                )
             if examples:
                 user_content += _render_section_few_shot(examples)
 

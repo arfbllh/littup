@@ -383,7 +383,10 @@ export default function DraftDetailPage() {
     const fe: Record<string, string> = {};
     if (draft.fields) {
       for (const [k, v] of Object.entries(draft.fields)) {
-        fe[k] = typeof v === 'string' ? v : JSON.stringify(v);
+        const raw = v != null && typeof v === 'object' && 'value' in (v as object)
+          ? (v as Record<string, unknown>).value
+          : v;
+        fe[k] = typeof raw === 'string' ? raw : JSON.stringify(raw);
       }
     }
     const se: Record<string, string> = {};
@@ -399,15 +402,20 @@ export default function DraftDetailPage() {
     if (!draft) return;
     setIsSaving(true);
     try {
-      // Build final_output: all current fields + sections (edited values override originals)
-      const fields: Record<string, unknown> = { ...(draft.fields ?? {}) };
+      // Build final_output: unwrap {value,...} objects to plain values, then apply edits
+      const fields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(draft.fields ?? {})) {
+        fields[k] = v != null && typeof v === 'object' && 'value' in (v as object)
+          ? (v as Record<string, unknown>).value
+          : v;
+      }
       for (const [k, v] of Object.entries(fieldEdits)) {
         fields[k] = v;
       }
-      const sections: Record<string, string> = {};
-      for (const sec of draft.sections) {
-        sections[sec.name] = sectionEdits[sec.name] ?? sec.text ?? '';
-      }
+      const sections = draft.sections.map((sec) => ({
+        name: sec.name,
+        text: sectionEdits[sec.name] ?? sec.text ?? '',
+      }));
       await saveEdit(draft.draft_id, { fields, sections });
       setEditMode(false);
       mutate();
@@ -764,7 +772,12 @@ export default function DraftDetailPage() {
                       />
                     ) : (
                       <div className="prose-doc" style={{ fontSize: '13px' }}>
-                        {typeof value === 'string' ? value : JSON.stringify(value)}
+                        {(() => {
+                          const v = value != null && typeof value === 'object' && 'value' in (value as object)
+                            ? (value as Record<string, unknown>).value
+                            : value;
+                          return typeof v === 'string' ? v : JSON.stringify(v);
+                        })()}
                       </div>
                     )}
                   </React.Fragment>

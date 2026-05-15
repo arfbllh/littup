@@ -27,7 +27,7 @@ def render_page_png(
         from pdf2image import convert_from_path
     except ImportError as exc:
         raise PageRenderUnavailableError(
-            "pdf2image is not installed (M3 deferred dependency)"
+            "pdf2image is not installed"
         ) from exc
 
     try:

@@ -1,5 +1,5 @@
 """
-Tests for JobQueue (NN-1, NN-3):
+Tests for JobQueue:
 - Enqueue + claim with two workers → each job claimed exactly once
 - Complete a job
 - Fail a job with retry logic

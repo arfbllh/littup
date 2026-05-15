@@ -1,0 +1,44 @@
+# VCS / editor / OS
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.DS_Store
+
+# Python build / caches
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Local secrets and developer overrides — never bake these into an image
+.env
+.env.*
+!.env.example
+
+# Tests, fixtures, samples — runtime image doesn't need any of these
+tests
+samples
+eval/reports
+
+# Frontend lives in its own build pipeline
+ui
+
+# Local data / model caches; the image creates fresh empty dirs
+data
+hf-cache
+*.log
+/tmp
+
+# Tooling artifacts
+*.tsbuildinfo
+node_modules

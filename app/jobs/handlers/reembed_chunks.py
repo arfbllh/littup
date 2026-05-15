@@ -2,7 +2,7 @@
 
 The block-edit cascade (``app/ingest/block_edits.py``) NULLs ``chunks.embedding``
 and enqueues this job with the affected chunk IDs. Re-embedding is local —
-BGE-large stays on the local embedder; no LLM-tier spend (Inv #6).
+BGE-large stays on the local embedder; no LLM-tier spend.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ async def handle_reembed_chunks(payload: dict, session: AsyncSession) -> dict:
             await session.commit()
             embedded += len(batch)
     except Exception as exc:
-        # WS-E.3: emit a `reembed_failed` event so the UI can surface a banner
+        # Emit a `reembed_failed` event so the UI can surface a banner
         # instead of leaving the operator wondering why citations are forever
         # stale. The job runner will retry up to its bounded budget; this event
         # is informational on this particular attempt.

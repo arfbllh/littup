@@ -28,6 +28,8 @@ class DocumentStatus(BaseModel):
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+    ocr_provider_override: str | None = None
+    ocr_provider_used: str | None = None
 
 
 class DocumentSummary(BaseModel):

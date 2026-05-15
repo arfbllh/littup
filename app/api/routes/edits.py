@@ -1,4 +1,4 @@
-"""Edit capture routes (M9)."""
+"""Edit capture routes."""
 from __future__ import annotations
 
 import structlog

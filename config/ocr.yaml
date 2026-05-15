@@ -1,5 +1,9 @@
 max_vlm_pages_per_doc: 20
 paddleocr_confidence_threshold: 0.7
+# Non-PDF images with fewer total extracted characters than this are treated as
+# photographs or diagrams and routed to VLM description mode rather than text
+# transcription. Set to 0 to disable photo detection.
+sparse_text_chars_threshold: 50
 classify:
   blurry_laplacian_variance_threshold: 100
   handwriting_stroke_ratio_threshold: 0.35

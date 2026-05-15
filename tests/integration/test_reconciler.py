@@ -1,5 +1,5 @@
 """
-Tests for Reconciler (NN-1).
+Tests for Reconciler.
 """
 
 import uuid

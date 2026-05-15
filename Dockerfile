@@ -14,6 +14,14 @@ RUN pip install --no-cache-dir uv
 COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 
+# GPU build: replace the CPU paddlepaddle wheel with the matching GPU wheel.
+# Enable by building with: docker build --build-arg PADDLE_GPU=1 ...
+ARG PADDLE_GPU=0
+RUN if [ "$PADDLE_GPU" = "1" ]; then \
+        uv pip uninstall --system paddlepaddle || true && \
+        uv pip install --system --no-cache paddlepaddle-gpu; \
+    fi
+
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
@@ -37,30 +45,64 @@ RUN groupadd -r appuser && useradd -r -m -g appuser appuser
 
 WORKDIR /app
 
-# Copy installed packages from builder
+# Copy installed packages from builder. These layers only bust when
+# requirements.txt changes, so the model bake below stays cached across
+# normal code edits.
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application code
-COPY app/ app/
-COPY config/ config/
-
-# Persist HF / sentence-transformers / paddleocr caches on the data volume so
-# they survive container restarts instead of re-downloading on every boot.
-ENV HF_HOME=/app/data/hf-cache \
-    SENTENCE_TRANSFORMERS_HOME=/app/data/hf-cache/sentence-transformers \
-    PADDLE_OCR_BASE_DIR=/app/data/paddleocr-cache \
+# Persist HF / sentence-transformers / paddleocr caches so they survive
+# container restarts. All three point under /app/hf-cache (mounted as a named
+# volume in docker-compose) so a single volume catches every downloaded blob
+# regardless of which library wrote it.
+ENV HF_HOME=/app/hf-cache \
+    SENTENCE_TRANSFORMERS_HOME=/app/hf-cache/sentence-transformers \
+    PADDLE_OCR_BASE_DIR=/app/hf-cache/paddleocr \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Create writable dirs as root, then drop to appuser so the bake step (and
+# everything that follows) runs unprivileged. Both /app/data and /app/hf-cache
+# are created here so neither needs a chown after the COPY steps below.
 RUN mkdir -p \
         /app/data/uploads \
         /app/data/page_images \
-        /app/data/hf-cache \
-        /app/data/paddleocr-cache \
+        /app/hf-cache/sentence-transformers \
+        /app/hf-cache/paddleocr \
     && chown -R appuser:appuser /app
 
 USER appuser
+
+# Pre-bake the embedder + reranker into the image so a fresh container starts
+# in seconds instead of pulling ~2.4 GB of weights on first boot. The models
+# land under /app/hf-cache; the named volume mount in compose preserves them
+# across restarts. Models are baked into the image layer, so even if the
+# volume is wiped (`docker volume rm`), the next container start still finds
+# the weights via the image's content.
+#
+# IMPORTANT: this RUN sits *before* COPY app/ and COPY config/ so that editing
+# Python source or YAML templates does NOT invalidate the bake cache. It only
+# busts when requirements.txt (and therefore site-packages) changes.
+# HF_TOKEN is mounted as a BuildKit secret (id=hf_token, sourced from the
+# HF_TOKEN env on the host) — available only during this RUN, never written
+# to any image layer. Anonymous downloads work but are rate-limited; an
+# authenticated token gives ~5× higher throughput from the HF CDN.
+#
+# Build with auth:
+#   export $(grep '^HF_TOKEN=' .env | xargs)
+#   DOCKER_BUILDKIT=1 docker compose build --secret id=hf_token,env=HF_TOKEN worker api
+# Build without auth (slower):
+#   docker compose build worker api
+RUN --mount=type=secret,id=hf_token,required=false \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
+    python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
+    SentenceTransformer('BAAI/bge-large-en-v1.5'); \
+    CrossEncoder('BAAI/bge-reranker-base')"
+
+# Application code last so edits don't invalidate the (expensive) bake layer
+# above. --chown ensures appuser owns the files since we've already USER-switched.
+COPY --chown=appuser:appuser app/ app/
+COPY --chown=appuser:appuser config/ config/
 
 EXPOSE 8000
 

@@ -1,4 +1,4 @@
-"""NN-10: SSE replay honors Last-Event-ID.
+"""SSE replay honors Last-Event-ID.
 
 Note: we test the streaming generator directly rather than via httpx
 ASGI transport, which buffers StreamingResponse chunks and would make

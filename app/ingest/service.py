@@ -57,6 +57,8 @@ class DocumentRecord:
     created_at: Any
     updated_at: Any
     has_blocks: bool = False
+    ocr_provider_override: str | None = None
+    ocr_provider_used: str | None = None
 
 
 class IngestService:
@@ -76,7 +78,7 @@ class IngestService:
 
     # ── Upload ───────────────────────────────────────────────────────
     async def upload(self, upload: UploadFile) -> UploadResult:
-        # NN-3 backpressure pre-check
+        # Backpressure pre-check
         pending = await self.queue.pending_count()
         if pending >= self.max_pending:
             raise RateLimitError(
@@ -151,7 +153,7 @@ class IngestService:
     async def _atomic_upsert(
         self, *, sha256: str, filename: str, mime: str, size: int
     ) -> tuple[str, bool, bool]:
-        """NN-2: single statement returning (id, was_new, prev_was_failed)."""
+        """Single statement returning (id, was_new, prev_was_failed)."""
         result = await self.session.execute(
             text(
                 """
@@ -183,10 +185,18 @@ class IngestService:
         result = await self.session.execute(
             text(
                 """
-                SELECT id, sha256, filename, mime_type, size_bytes, page_count,
-                       status, last_event_seq, error_code, error_message,
-                       created_at, updated_at
-                FROM app.documents WHERE id = :id
+                SELECT d.id, d.sha256, d.filename, d.mime_type, d.size_bytes, d.page_count,
+                       d.status, d.last_event_seq, d.error_code, d.error_message,
+                       d.created_at, d.updated_at, d.ocr_provider_override,
+                       (
+                           SELECT s.source FROM app.spans s
+                             JOIN app.pages p ON p.id = s.page_id
+                            WHERE p.document_id = d.id AND s.source IS NOT NULL
+                            GROUP BY s.source
+                            ORDER BY COUNT(*) DESC
+                            LIMIT 1
+                       ) AS ocr_provider_used
+                FROM app.documents d WHERE d.id = :id
                 """
             ),
             {"id": document_id},
@@ -207,6 +217,8 @@ class IngestService:
             error_message=row.error_message,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            ocr_provider_override=row.ocr_provider_override,
+            ocr_provider_used=row.ocr_provider_used,
         )
 
     async def list_documents(
@@ -221,7 +233,7 @@ class IngestService:
         if status_filter:
             where = "WHERE d.status = :status"
             params["status"] = status_filter
-        # WS-A.4: `has_blocks` lets the list page surface a retry button on
+        # `has_blocks` lets the list page surface a retry button on
         # `ready` docs with zero extracted blocks without an N+1 fetch.
         result = await self.session.execute(
             text(
@@ -297,7 +309,7 @@ class IngestService:
     def upload_path(self, sha256: str, ext: str):
         return self.store.path_for(sha256, ext)
 
-    # ── OCR orchestration (M4) ────────────────────────────────────────────────
+    # ── OCR orchestration ─────────────────────────────────────────────────────
 
     async def ocr_document(
         self,
@@ -305,14 +317,19 @@ class IngestService:
         *,
         llm_router: LLMRouter | None = None,
         config=None,  # OCRConfig | None — pass in tests to override YAML config
+        only_page: int | None = None,
     ) -> dict[str, Any]:
         """Drive a document through the OCR state machine.
 
         Returns a summary dict used as the job result payload.
         State transitions: ocr_pending → ocr_running → ocr_done (or failed).
+
+        ``only_page``: when set, OCR only that single page (1-based) and skip
+        the full-document state transitions. Used by per-page re-extract — the
+        caller is responsible for re-enqueueing layout/chunking/embedding so
+        downstream artifacts pick up the new spans.
         """
         from app.ingest.ocr.base import load_ocr_config
-        from app.ingest.ocr.paddle_ocr import release_paddle
         from app.ingest.ocr.pdfplumber_ocr import has_text_layer
         from app.ingest.ocr.routing import route_and_extract
 
@@ -321,23 +338,30 @@ class IngestService:
         # ── Load document record ──────────────────────────────────────────────
         row = await self.session.execute(
             text(
-                "SELECT id, sha256, mime_type, status FROM app.documents WHERE id = :id"
+                "SELECT id, sha256, mime_type, status, ocr_provider_override "
+                "FROM app.documents WHERE id = :id"
             ),
             {"id": document_id},
         )
         doc = row.fetchone()
         if doc is None:
             raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
+        provider_override: str | None = doc.ocr_provider_override
 
-        if doc.status in ("ocr_done", "ready"):
+        # In single-page mode the document is already past `ready` — we do
+        # NOT short-circuit and we do NOT touch the doc-level status. Layout
+        # and downstream stages re-run only because reextract_page enqueues
+        # them after this OCR job completes.
+        if only_page is None and doc.status in ("ocr_done", "ready"):
             return {"skipped": True, "reason": "already_done"}
 
         # ── ocr_pending ───────────────────────────────────────────────────────
-        await self._set_doc_status(document_id, "ocr_pending")
-        await DocumentEventBus.emit(
-            self.session, document_id, "status_changed", {"to": "ocr_pending"}
-        )
-        await self.session.commit()
+        if only_page is None:
+            await self._set_doc_status(document_id, "ocr_pending")
+            await DocumentEventBus.emit(
+                self.session, document_id, "status_changed", {"to": "ocr_pending"}
+            )
+            await self.session.commit()
 
         # ── Locate file on disk ───────────────────────────────────────────────
         ext = ext_for(doc.mime_type or PDF)
@@ -348,13 +372,14 @@ class IngestService:
             raise IngestError(f"Uploaded file not found at {file_path}", code="FILE_NOT_FOUND")
 
         # ── ocr_running ───────────────────────────────────────────────────────
-        claimed = await self._claim_ocr_running(document_id)
-        if not claimed:
-            return {"skipped": True, "reason": "already_claimed"}
-        await DocumentEventBus.emit(
-            self.session, document_id, "status_changed", {"to": "ocr_running"}
-        )
-        await self.session.commit()
+        if only_page is None:
+            claimed = await self._claim_ocr_running(document_id)
+            if not claimed:
+                return {"skipped": True, "reason": "already_claimed"}
+            await DocumentEventBus.emit(
+                self.session, document_id, "status_changed", {"to": "ocr_running"}
+            )
+            await self.session.commit()
 
         # ── Text-bearing formats (.txt, .md, .json) bypass OCR entirely ───────
         mime_lower = (doc.mime_type or "").lower()
@@ -365,7 +390,17 @@ class IngestService:
 
         # ── Determine if this is a native PDF ─────────────────────────────────
         is_pdf = mime_lower == PDF
-        native = is_pdf and has_text_layer(file_path)
+        if provider_override == "paddleocr":
+            # Operator forced PaddleOCR for this doc — ignore any text layer.
+            native = False
+        elif provider_override == "pdfplumber" and is_pdf:
+            # Operator forced pdfplumber — assume native regardless of heuristic.
+            native = True
+        elif settings.OCR_FORCE_RASTER:
+            # Global setting: ignore embedded text layers across all PDFs.
+            native = False
+        else:
+            native = is_pdf and has_text_layer(file_path)
         is_scan_pdf = is_pdf and not native
 
         # ── Rasterise pages (scan/image path only; native PDFs skip rasterisation) ─
@@ -390,53 +425,120 @@ class IngestService:
         await self.session.commit()
 
         # ── Per-page OCR ───────────────────────────────────────────────────────
+        from app.core.errors import CancelledIngest
+        from app.jobs.context import current_job_id
+        from app.jobs.queue import JobQueue as _JobQueue
+
+        active_job_id = current_job_id.get()
+        cancel_probe = _JobQueue(self.session) if active_job_id else None
+
+        async def _check_cancel(stage: str, page: int) -> None:
+            if cancel_probe is None:
+                return
+            if await cancel_probe.is_cancel_requested(active_job_id):
+                logger.info(
+                    "ocr_cancelled",
+                    document_id=document_id,
+                    job_id=active_job_id,
+                    stage=stage,
+                    page=page,
+                )
+                raise CancelledIngest(
+                    f"OCR cancelled at {stage} (page {page}) for document {document_id}"
+                )
+
+        # Single-page mode (per-page re-extract) — clamp the loop to that page.
+        if only_page is not None:
+            if only_page < 1 or only_page > page_count:
+                raise IngestError(
+                    f"only_page={only_page} out of range for {page_count}-page doc",
+                    code="PAGE_OUT_OF_RANGE",
+                    retryable=False,
+                )
+            page_iter = range(only_page, only_page + 1)
+        else:
+            page_iter = range(1, page_count + 1)
+
         results: list[dict[str, Any]] = []
         try:
-            for page_num in range(1, page_count + 1):
-                if page_images is not None:
+            for page_num in page_iter:
+                await _check_cancel("page_start", page_num)
+
+                # Per-page override beats doc-level routing — operator can pin
+                # a single page to pdfplumber/paddleocr without re-running the
+                # whole doc through the unwanted engine.
+                page_override = await self._get_page_provider_override(
+                    document_id, page_num
+                )
+                if page_override == "pdfplumber" and is_pdf:
+                    page_native = True
+                elif page_override == "paddleocr":
+                    page_native = False
+                else:
+                    page_native = native
+
+                if page_native:
+                    page_img = None
+                elif page_images is not None and page_num - 1 < len(page_images):
                     page_img = page_images[page_num - 1]
-                elif is_scan_pdf:
+                else:
+                    # is_scan_pdf or page_override forced us off the native path
                     try:
                         page_img = await self._rasterise_one_page(file_path, page_num)
                     except Exception as exc:
                         results.append({"page": page_num, "status": "failed", "error": str(exc)})
                         continue
-                else:
-                    page_img = None
+                await _check_cancel("post_rasterise", page_num)
                 page_result = await self._ocr_one_page(
                     document_id=document_id,
                     page_num=page_num,
                     page_img=page_img,
                     file_path=file_path,
-                    has_text_layer=native,
+                    has_text_layer=page_native,
                     cfg=cfg,
                     llm_router=llm_router,
                     route_and_extract=route_and_extract,
                 )
+                logger.info(
+                    "ocr_page_done",
+                    document_id=document_id,
+                    page=page_num,
+                    provider=page_result.get("source"),
+                    span_count=page_result.get("span_count"),
+                    mean_confidence=page_result.get("mean_confidence"),
+                )
                 results.append(page_result)
+        except CancelledIngest:
+            # Don't touch app.documents — the row may already be deleted.
+            raise
         except Exception as exc:
             await self._fail_document(document_id, "OCR_LOOP_ERROR", str(exc))
             await self.session.commit()
             raise IngestError(str(exc), code="OCR_LOOP_ERROR") from exc
-        finally:
-            # Always release PaddleOCR memory regardless of success/failure (B-1)
-            release_paddle()
 
         # ── ocr_done ──────────────────────────────────────────────────────────
-        await self._set_doc_status(document_id, "ocr_done")
-        await DocumentEventBus.emit(
-            self.session, document_id, "status_changed", {"to": "ocr_done"}
-        )
-        await self.session.commit()
+        # Single-page mode never sets the doc-level status — the doc is already
+        # past `ready`; only the targeted page's spans were updated.
+        if only_page is None:
+            await self._set_doc_status(document_id, "ocr_done")
+            await DocumentEventBus.emit(
+                self.session, document_id, "status_changed", {"to": "ocr_done"}
+            )
+            await self.session.commit()
 
         total_spans = sum(r.get("span_count", 0) for r in results)
-        vlm_pages = sum(1 for r in results if r.get("source") == "vlm")
+        vlm_pages = sum(1 for r in results if r.get("source") in ("vlm", "vlm_description"))
+        provider_counts: dict[str, int] = {}
+        for r in results:
+            src = r.get("source") or "unknown"
+            provider_counts[src] = provider_counts.get(src, 0) + 1
         logger.info(
             "ocr_document_done",
             document_id=document_id,
             page_count=page_count,
             total_spans=total_spans,
             vlm_pages=vlm_pages,
+            providers=provider_counts,
         )
         return {
             "document_id": document_id,
@@ -462,10 +564,30 @@ class IngestService:
             img = cv2.imread(str(file_path))
             if img is None:
                 raise IngestError(f"Cannot read image: {file_path}", code="IMAGE_READ_ERROR")
+            max_side = settings.OCR_MAX_IMAGE_SIDE
+            h, w = img.shape[:2]
+            longest = max(h, w)
+            if longest > max_side:
+                scale = max_side / longest
+                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
             return [img]
 
         # Scanned PDF: return None — caller uses _rasterise_one_page per page
         return None
+
+    async def _get_page_provider_override(
+        self, document_id: str, page_num: int
+    ) -> str | None:
+        """Return the per-page OCR engine override, or None if not set."""
+        result = await self.session.execute(
+            text(
+                "SELECT ocr_provider_override FROM app.pages "
+                "WHERE document_id = :doc AND page_number = :pn"
+            ),
+            {"doc": document_id, "pn": page_num},
+        )
+        row = result.fetchone()
+        return row.ocr_provider_override if row else None
 
     async def _rasterise_one_page(self, file_path: Path, page_num: int):
         """Rasterise a single page from a scanned PDF. Frees memory after each call."""
@@ -490,7 +612,19 @@ class IngestService:
                 raise IngestError(
                     f"pdf2image returned no image for page {page_num}", code="RASTERISE_ERROR"
                 )
-            return cv2.cvtColor(np.array(pages[0]), cv2.COLOR_RGB2BGR)
+            img = cv2.cvtColor(np.array(pages[0]), cv2.COLOR_RGB2BGR)
+            # Cap the long side. PaddleOCR's detector resizes anything bigger to
+            # OCR_MAX_IMAGE_SIDE internally; doing it here saves RAM and avoids
+            # the "Resized image size exceeds max_side_limit" warning.
+            max_side = settings.OCR_MAX_IMAGE_SIDE
+            h, w = img.shape[:2]
+            longest = max(h, w)
+            if longest > max_side:
+                scale = max_side / longest
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            return img
 
         return await loop.run_in_executor(_OCR_EXECUTOR, _convert)
 
@@ -760,7 +894,7 @@ class IngestService:
             "pages": [{"page": 1, "status": "ocr_done", "span_count": n, "source": source_tag}],
         }
 
-    # ── Layout / Chunking / Embedding orchestration (M5) ──────────────────────
+    # ── Layout / Chunking / Embedding orchestration ───────────────────────────
 
     async def parse_layout(self, document_id: str) -> dict[str, Any]:
         """Drive a document through ocr_done → layout_done.
@@ -858,7 +992,7 @@ class IngestService:
     async def embed_chunks(self, document_id: str, embedder) -> dict[str, Any]:
         """Drive a document through chunking_done → ready.
 
-        Commits after each batch so a crash mid-document resumes correctly (NN-1):
+        Commits after each batch so a crash mid-document resumes correctly:
         only un-embedded chunks are selected on re-entry.
         """
         claimed = await self._claim_embedding_running(document_id)
@@ -988,21 +1122,67 @@ class IngestService:
         app.document_events. We additionally drop jobs.jobs rows for this doc
         (no FK), the uploaded blob on disk (safe: sha256 is unique to one doc),
         and any cached page images.
+
+        If any job is currently running for this document, we signal
+        cooperative cancellation (jobs.jobs.cancel_requested = TRUE), poll up
+        to ~5s for the worker to bail out between page iterations, then issue
+        the DELETE with a short ``lock_timeout``. If the worker is still
+        holding an FK row lock past that, the API returns 409 ConflictError
+        with a Retry-After hint rather than hanging or erroring opaquely.
         """
         import shutil
+
+        from app.core.errors import ConflictError
+        from app.jobs.queue import JobQueue as _JobQueue
+        from sqlalchemy.exc import DBAPIError, OperationalError
 
         doc = await self.get_document(document_id)
         if doc is None:
             raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
 
-        await self.session.execute(
-            text("DELETE FROM jobs.jobs WHERE payload->>'document_id' = :id"),
-            {"id": document_id},
-        )
-        await self.session.execute(
-            text("DELETE FROM app.documents WHERE id = :id"), {"id": document_id}
-        )
+        queue = _JobQueue(self.session)
+        flagged = await queue.request_cancel_for_document(document_id)
         await self.session.commit()
+
+        if flagged:
+            # Poll up to ~5s for any running job to exit (cancel + commit cycle).
+            for _ in range(50):
+                still_running = await self.session.execute(
+                    text(
+                        "SELECT 1 FROM jobs.jobs "
+                        "WHERE payload->>'document_id' = :id AND status = 'running' LIMIT 1"
+                    ),
+                    {"id": document_id},
+                )
+                if still_running.fetchone() is None:
+                    break
+                await asyncio.sleep(0.1)
+
+        # Bound the DELETE wait so a worker mid-INSERT can't pin the request forever.
+        try:
+            await self.session.execute(text("SET LOCAL lock_timeout = '3s'"))
+            await self.session.execute(
+                text("DELETE FROM jobs.jobs WHERE payload->>'document_id' = :id"),
+                {"id": document_id},
+            )
+            await self.session.execute(
+                text("DELETE FROM app.documents WHERE id = :id"), {"id": document_id}
+            )
+            await self.session.commit()
+        except (OperationalError, DBAPIError) as exc:
+            await self.session.rollback()
+            msg = str(exc).lower()
+            if "lock_timeout" in msg or "lock timeout" in msg or "canceling statement" in msg:
+                logger.warning(
+                    "ingest_delete_locked",
+                    document_id=document_id,
+                    error=str(exc),
+                )
+                raise ConflictError(
+                    "Document is still being processed; cancellation requested. "
+                    "Retry in a few seconds."
+                ) from exc
+            raise
 
         if doc.mime_type:
             try:
@@ -1036,7 +1216,11 @@ class IngestService:
         return {"document_id": document_id, "deleted": True}
 
     async def retry_document(
-        self, document_id: str, *, force: bool = False
+        self,
+        document_id: str,
+        *,
+        force: bool = False,
+        provider_override: str | None = None,
     ) -> dict[str, Any]:
         """Reset a document and re-enqueue it at the start of the pipeline.
 
@@ -1046,10 +1230,27 @@ class IngestService:
         exists in `jobs.jobs` (completed or failed) and the unique constraint
         would otherwise block re-enqueue.
 
-        WS-A.2: with ``force=True``, allow retry from any terminal state
+        With ``force=True``, allow retry from any terminal state
         (``ready``, ``failed``) so an operator can unstick a doc that reached
         ``ready`` with zero blocks.
+
+        ``provider_override`` ('pdfplumber'|'paddleocr'|'auto'|None): when set
+        to 'pdfplumber' or 'paddleocr', the OCR routing forces that engine for
+        every page on this rerun. 'auto' or None clears any prior override and
+        restores per-page automatic routing.
         """
+        if provider_override is not None and provider_override not in (
+            "pdfplumber",
+            "paddleocr",
+            "auto",
+        ):
+            raise IngestError(
+                f"Invalid provider_override '{provider_override}'; "
+                "expected 'pdfplumber', 'paddleocr', or 'auto'.",
+                code="INVALID_PROVIDER_OVERRIDE",
+                retryable=False,
+            )
+
         doc = await self.get_document(document_id)
         if doc is None:
             raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
@@ -1091,6 +1292,11 @@ class IngestService:
             {"id": document_id},
         )
 
+        # Persist the override so the worker reads it inside ocr_document.
+        # 'auto' / None resets to NULL so the routing is automatic again.
+        new_override = (
+            None if provider_override in (None, "auto") else provider_override
+        )
         await self.session.execute(
             text(
                 """
@@ -1100,11 +1306,12 @@ class IngestService:
                        error_message = NULL,
                        page_count = NULL,
                        embedded_at = NULL,
+                       ocr_provider_override = :override,
                        updated_at = NOW()
                  WHERE id = :id
                 """
             ),
-            {"id": document_id},
+            {"id": document_id, "override": new_override},
         )
         await DocumentEventBus.emit(
             self.session, document_id, "status_changed", {"to": "uploaded"}
@@ -1121,8 +1328,148 @@ class IngestService:
             "ingest_retried",
             document_id=document_id,
             previous_error_code=doc.error_code,
+            provider_override=new_override,
         )
-        return {"document_id": document_id, "status": "uploaded"}
+        return {
+            "document_id": document_id,
+            "status": "uploaded",
+            "ocr_provider_override": new_override,
+        }
+
+    async def reextract_page(
+        self,
+        document_id: str,
+        page_num: int,
+        *,
+        provider: str,
+    ) -> dict[str, Any]:
+        """Re-OCR a single page with the chosen engine, then re-run downstream.
+
+        Wipes only the spans for the target page (other pages keep their OCR),
+        but does drop blocks/chunks/embeddings for the whole document because
+        layout/chunking/embedding cross page boundaries — they have to re-run.
+        After this returns, the worker will:
+
+            1. OCR just ``page_num`` using ``provider`` (single-page mode).
+            2. Re-run layout for the whole doc.
+            3. Re-run chunking for the whole doc.
+            4. Re-embed every chunk.
+
+        OCR is the expensive step and only runs for the one page; the rest is
+        seconds-to-minutes total even on a 60-page document.
+        """
+        if provider not in ("pdfplumber", "paddleocr"):
+            raise IngestError(
+                f"Invalid provider '{provider}'; expected 'pdfplumber' or 'paddleocr'.",
+                code="INVALID_PROVIDER_OVERRIDE",
+                retryable=False,
+            )
+
+        doc = await self.get_document(document_id)
+        if doc is None:
+            raise IngestError(f"Document {document_id} not found", code="DOCUMENT_NOT_FOUND")
+        if doc.status not in ("ready", "failed"):
+            raise IngestError(
+                f"Cannot re-extract page in status '{doc.status}'; "
+                "document must be 'ready' or 'failed'.",
+                code="NOT_REEXTRACTABLE",
+                retryable=False,
+            )
+
+        # Locate the page row + ensure it exists.
+        page_row = await self.session.execute(
+            text(
+                "SELECT id FROM app.pages "
+                "WHERE document_id = :doc AND page_number = :pn"
+            ),
+            {"doc": document_id, "pn": page_num},
+        )
+        page = page_row.fetchone()
+        if page is None:
+            raise IngestError(
+                f"Page {page_num} not found for document {document_id}",
+                code="PAGE_NOT_FOUND",
+                retryable=False,
+            )
+
+        # Wipe the spans for the target page; OCR will repopulate.
+        await self.session.execute(
+            text("DELETE FROM app.spans WHERE page_id = :pid"),
+            {"pid": page.id},
+        )
+        # Reset that page's status so _ocr_one_page's INSERT…ON CONFLICT path
+        # finds it but the page is correctly marked as in-progress.
+        await self.session.execute(
+            text(
+                """
+                UPDATE app.pages
+                   SET status = 'pending',
+                       ocr_provider_override = :override
+                 WHERE id = :pid
+                """
+            ),
+            {"pid": page.id, "override": provider},
+        )
+        # Drop downstream artifacts — they cross page boundaries, so they all
+        # need to be regenerated once the new spans are in.
+        await self.session.execute(
+            text("DELETE FROM app.chunks WHERE document_id = :id"), {"id": document_id}
+        )
+        await self.session.execute(
+            text("DELETE FROM app.blocks WHERE document_id = :id"), {"id": document_id}
+        )
+        # Reset doc-level status to 'ocr_done' so the layout claim succeeds
+        # after the single-page OCR completes. Other pages keep their spans.
+        await self.session.execute(
+            text(
+                """
+                UPDATE app.documents
+                   SET status = 'ocr_done',
+                       embedded_at = NULL,
+                       updated_at = NOW()
+                 WHERE id = :id
+                """
+            ),
+            {"id": document_id},
+        )
+        await DocumentEventBus.emit(
+            self.session, document_id, "status_changed", {"to": "ocr_done"}
+        )
+
+        # Drop any prior job rows for this document so the downstream cascade
+        # (layout → chunking → embedding) — which all use stable dedup keys
+        # like `chunking:{doc_id}` — isn't silently de-duplicated against the
+        # rows from the original ingestion. This was the "stuck on chunking"
+        # bug: layout ran fine because we used a unique key, but its enqueue
+        # of chunking collided with the completed row and was silently dropped.
+        await self.session.execute(
+            text("DELETE FROM jobs.jobs WHERE payload->>'document_id' = :id"),
+            {"id": document_id},
+        )
+
+        # Enqueue OCR with single-page payload. Unique dedup_key per re-extract
+        # so it doesn't collide with the original `ocr:{doc_id}` row.
+        from app.core.ids import new_uuid7
+        dedup = f"ocr:{document_id}:p{page_num}:{new_uuid7()[:8]}"
+        await self.queue.enqueue(
+            kind=JobKind.OCR.value,
+            payload={"document_id": document_id, "page_num": page_num},
+            dedup_key=dedup,
+        )
+        await self.session.commit()
+
+        logger.info(
+            "ingest_page_reextract_enqueued",
+            document_id=document_id,
+            page=page_num,
+            provider=provider,
+        )
+        return {
+            "document_id": document_id,
+            "page_num": page_num,
+            "provider": provider,
+            "status": "ocr_done",
+        }
 
     async def _fail_document(self, document_id: str, code: str, message: str) -> None:
         await self.session.execute(

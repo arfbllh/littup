@@ -1,7 +1,7 @@
 """Integration: layout parsing state transitions and multi-column reading order.
 
-NN-1: ocr_done → layout_running → layout_done state machine.
-M5 spec: column-1 blocks entirely before column-2 blocks in reading_order.
+State machine: ocr_done → layout_running → layout_done.
+Multi-column reading order: column-1 blocks entirely before column-2 blocks in reading_order.
 
 Fixture ordering note: cleanup_documents_and_jobs is requested before db_session
 in every test so that db_session tears down first (releasing DB locks) before the

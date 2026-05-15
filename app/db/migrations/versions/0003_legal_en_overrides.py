@@ -1,4 +1,4 @@
-"""Add legal_en dict overrides for proper nouns / statute cites (NN-8).
+"""Add legal_en dict overrides for proper nouns / statute cites.
 
 Revision ID: 0003
 Revises: 0002

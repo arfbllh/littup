@@ -1,8 +1,8 @@
 """MIME detection via magic-byte sniffing for the supported document types.
 
-We avoid the `python-magic` system dependency (libmagic) for M3. The
-allowlist is small and the magic numbers are stable; if M4 needs more
-exotic types we can swap to `python-magic`.
+We avoid the `python-magic` system dependency (libmagic). The
+allowlist is small and the magic numbers are stable; if more
+exotic types are needed we can swap to `python-magic`.
 
 Plain-text formats have no magic bytes, so detection falls back to the
 caller's filename hint plus a UTF-8 / no-NUL-byte sniff.

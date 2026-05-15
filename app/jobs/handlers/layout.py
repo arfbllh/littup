@@ -25,7 +25,7 @@ async def handle_layout(payload: dict, session: AsyncSession) -> dict:
     except Exception as exc:
         raise IngestError(str(exc), code="LAYOUT_UNEXPECTED_ERROR") from exc
 
-    # Enqueue next stage — dedup_key prevents double-enqueue (NN-1)
+    # Enqueue next stage — dedup_key prevents double-enqueue
     await service.queue.enqueue(
         kind=JobKind.CHUNKING.value,
         payload={"document_id": doc_id},

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * NN-10 compliance tests: SSE reconnect + polling fallback
+ * SSE reconnect + polling fallback compliance tests.
  *
  * These tests verify:
  * 1. SSE connection is established with Last-Event-ID header on reconnect
@@ -24,7 +24,7 @@ const MOCK_DOC = {
   updated_at: new Date().toISOString(),
 };
 
-test.describe('SSE reconnect and polling fallback (NN-10)', () => {
+test.describe('SSE reconnect and polling fallback', () => {
   test('document detail page connects to SSE endpoint', async ({ page }) => {
     const sseRequests: string[] = [];
 

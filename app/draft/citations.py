@@ -1,4 +1,4 @@
-"""Pure citation parsing helpers used by generator and M8 validator."""
+"""Pure citation parsing helpers used by generator and validator."""
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
@@ -70,7 +70,7 @@ def segment_claims(section_text: str, citations: list) -> list[Claim]:
         claim_prose = parts[-1] if parts else segment
 
         # Strip the citation tag from the claim text before LLM validation so
-        # the UUID token doesn't contaminate faithfulness scoring (NN-7 cache key).
+        # the UUID token doesn't contaminate faithfulness scoring (cache key stability).
         clean_prose = _CHUNK_REF_RE.sub("", claim_prose).strip()
         claims.append(Claim(
             text=clean_prose,

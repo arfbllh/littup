@@ -10,7 +10,7 @@ from app.llm.types import TaskTier
 
 
 class ProviderConfig(BaseModel):
-    type: Literal["vllm", "anthropic", "openai", "gemini", "mock"]
+    type: Literal["ollama", "anthropic", "openai", "gemini", "mock"]
     model: str = ""
     base_url: str | None = None
     api_key_env: str | None = None

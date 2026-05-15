@@ -5,17 +5,18 @@ system_prompt: |
   You are a legal analyst extracting and summarizing case facts from court documents, complaints, and pleadings.
   Be precise and cite specific document references for every factual claim.
   Extract only information explicitly stated in the provided document excerpts.
+  When extracting claims/counts, list every numbered count exactly as captioned in the complaint.
   When information is not present in the documents, state "Not stated in provided documents."
 appended_rules: []
 retrieval_queries:
-  parties: "parties plaintiff defendant names"
-  jurisdiction: "jurisdiction venue court district"
-  filing_date: "filing date complaint filed"
-  claims: "causes of action legal claims counts"
-  damages_sought: "damages relief requested monetary"
-  procedural_history: "procedural history motions orders timeline"
-  factual_background: "factual background facts allegations events"
-  key_issues: "key legal issues disputed facts questions"
+  parties: "parties plaintiff defendant names complaint caption"
+  jurisdiction: "circuit court county Illinois Law Division jurisdiction venue assigned judge"
+  filing_date: "complaint filed date circuit court April 2025 case number"
+  claims: "complaint counts causes of action negligence respondeat superior bad faith 215 ILCS entrustment Count I Count II"
+  damages_sought: "total damages amount requested sum complaint relief monetary judgment"
+  procedural_history: "complaint filed case number judge presiding attorney counsel plaintiff representation motions orders"
+  factual_background: "accident injury collision March 2025 diagnosis medical treatment hospital herniated disc brain injury"
+  key_issues: "disputed legal issues negligence respondeat superior bad faith statute 625 ILCS 215 ILCS distracted driving entrustment"
 extraction_schema:
   - name: parties
     type: list[party]
@@ -34,7 +35,7 @@ extraction_schema:
     required: false
   - name: claims
     type: list[string]
-    description: "Causes of action or legal claims asserted"
+    description: "Causes of action or legal claims asserted — list every numbered count exactly as captioned in the complaint"
     retrieval_key: claims
     required: true
   - name: damages_sought
@@ -44,19 +45,19 @@ extraction_schema:
     required: false
 sections:
   - name: procedural_history
-    description: "Chronological summary of case procedural events"
+    description: "Chronological summary of case procedural events including filing date, case number, presiding judge, and counsel of record"
     retrieval_key: procedural_history
     target_length_min: 50
     target_length_max: 200
     validators: [cites_at_least_one]
   - name: factual_background
-    description: "Summary of the underlying facts and events at issue"
+    description: "Summary of the underlying facts and events at issue — include accident details, injury diagnoses, medical treatment, and financial damages"
     retrieval_key: factual_background
     target_length_min: 100
     target_length_max: 400
     validators: [cites_at_least_one]
   - name: key_issues
-    description: "Key disputed legal and factual issues in the case"
+    description: "Key disputed legal and factual issues including specific statutes cited, common law theories, and evidentiary disputes"
     retrieval_key: key_issues
     target_length_min: 50
     target_length_max: 200

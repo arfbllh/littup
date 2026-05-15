@@ -57,6 +57,7 @@ class DraftTemplate(BaseModel):
                 f.name: f.model_dump(mode="json") for f in self.extraction_schema
             },
             "sections": [s.model_dump(mode="json") for s in self.sections],
+            "retrieval_queries": dict(sorted(self.retrieval_queries.items())),
         }
         canonical = json.dumps(
             canonical_dict,

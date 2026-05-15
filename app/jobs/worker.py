@@ -2,21 +2,29 @@
 Worker process — run as: python -m app.jobs.worker
 
 Polls the job queue and dispatches to registered handlers.
-Per-kind asyncio.Semaphore bounds concurrency (NN-3).
+Per-kind asyncio.Semaphore bounds concurrency.
 Heartbeats every 10s while a job is running.
-Graceful SIGTERM: finishes current job then exits.
+
+Signals:
+- SIGINT (Ctrl+C) / SIGTERM: graceful — wake sleeping loops, cancel in-flight tasks,
+  let already-running handlers finish, then exit.
+- Second SIGINT: force-exit (os._exit(130)). Use when a handler is blocked in a
+  thread executor (e.g. PaddleOCR predict()) that can't be cancelled.
 """
 
 import asyncio
 import contextlib
+import os
 import signal
 
 import structlog
 
 import app.jobs.handlers  # noqa: F401  — registers handlers into HANDLERS
+from app.core.errors import CancelledIngest
 from app.core.ids import new_uuid7
 from app.core.logging import setup_logging
 from app.db.session import async_session_factory
+from app.jobs.context import current_job_id
 from app.jobs.kinds import JobKind, get_handler
 from app.jobs.queue import JobQueue
 from app.settings import settings
@@ -24,12 +32,21 @@ from app.settings import settings
 logger = structlog.get_logger(__name__)
 
 _SHUTDOWN = False
+_SHUTDOWN_EVENT: asyncio.Event | None = None
 
-# Per-kind concurrency limits (NN-3)
+# Per-kind concurrency limits
 _SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 
 # Strong references to in-flight tasks so asyncio doesn't GC them mid-execution.
 _TASKS: set[asyncio.Task] = set()
+
+
+async def _sleep_or_shutdown(seconds: float) -> None:
+    """Sleep up to ``seconds``; return immediately if shutdown is requested."""
+    if _SHUTDOWN or _SHUTDOWN_EVENT is None:
+        return
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(_SHUTDOWN_EVENT.wait(), timeout=seconds)
 
 
 def _get_semaphore(kind: str) -> asyncio.Semaphore:
@@ -72,6 +89,7 @@ async def _handle_job(job, worker_id: str) -> None:
             _heartbeat_loop(job.id, worker_id, settings.WORKER_HEARTBEAT_INTERVAL, stop_event)
         )
 
+        token = current_job_id.set(job.id)
         try:
             handler = get_handler(kind)
             async with async_session_factory() as session:
@@ -80,6 +98,15 @@ async def _handle_job(job, worker_id: str) -> None:
                 await q.complete(job.id, result)
                 await session.commit()
             logger.info("job_done", job_id=job.id, kind=kind)
+        except CancelledIngest as exc:
+            logger.info("job_cancelled", job_id=job.id, kind=kind, reason=str(exc))
+            try:
+                async with async_session_factory() as session:
+                    q = JobQueue(session)
+                    await q.cancel(job.id)
+                    await session.commit()
+            except Exception:
+                pass
         except Exception as exc:
             logger.error("job_handler_error", job_id=job.id, kind=kind, error=str(exc))
             retryable = getattr(exc, "retryable", True)
@@ -91,6 +118,7 @@ async def _handle_job(job, worker_id: str) -> None:
             except Exception:
                 pass
         finally:
+            current_job_id.reset(token)
             stop_event.set()
             hb_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -116,17 +144,17 @@ async def _poll_loop(worker_id: str) -> None:
                 _TASKS.add(task)
                 task.add_done_callback(_TASKS.discard)
             else:
-                await asyncio.sleep(backoff)
+                await _sleep_or_shutdown(backoff)
                 backoff = min(backoff * 1.5, 10.0)
         except Exception as exc:
             logger.error("poll_error", error=str(exc))
-            await asyncio.sleep(5)
+            await _sleep_or_shutdown(5)
 
 
 async def _reconcile_loop() -> None:
     from app.jobs.reconciler import Reconciler
 
-    # Run once at startup to reclaim any jobs stuck from before restart (NN-1),
+    # Run once at startup to reclaim any jobs stuck from before restart,
     # then repeat every 60 seconds.
     while not _SHUTDOWN:
         try:
@@ -138,22 +166,35 @@ async def _reconcile_loop() -> None:
                 await session.commit()
         except Exception as exc:
             logger.error("reconcile_error", error=str(exc))
-        await asyncio.sleep(60)
+        await _sleep_or_shutdown(60)
 
 
 async def _main() -> None:
-    global _SHUTDOWN
+    global _SHUTDOWN, _SHUTDOWN_EVENT
 
     setup_logging(level=settings.LOG_LEVEL, env=settings.ENV)
     worker_id = f"worker-{new_uuid7()[:8]}"
 
-    def _handle_sigterm(*_):
+    loop = asyncio.get_running_loop()
+    _SHUTDOWN_EVENT = asyncio.Event()
+    sigint_count = 0
+
+    def _handle_signal():
+        nonlocal sigint_count
         global _SHUTDOWN
+        sigint_count += 1
+        if sigint_count >= 2:
+            logger.warning("force_exit", worker_id=worker_id, signals=sigint_count)
+            os._exit(130)
         logger.info("sigterm_received", worker_id=worker_id)
         _SHUTDOWN = True
+        if _SHUTDOWN_EVENT is not None:
+            _SHUTDOWN_EVENT.set()
+        for task in _TASKS:
+            task.cancel()
 
-    signal.signal(signal.SIGTERM, _handle_sigterm)
-    signal.signal(signal.SIGINT, _handle_sigterm)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _handle_signal)
 
     logger.info("worker_started", worker_id=worker_id)
 
@@ -164,6 +205,24 @@ async def _main() -> None:
     registry = get_template_registry()
     llm_router = await get_llm_router()
     embedder = await get_embedder()
+
+    # Warm embedder + reranker in the background so the first draft doesn't
+    # pay the ~7 s + ~7 s cold-load cost (and the reranker doesn't fall into
+    # degraded_mode when 8 retrieval queries hit during a cold load).
+    async def _warm_models():
+        try:
+            from app.llm.embedder import BGEEmbedder
+            from app.llm.reranker_model import BGEReranker
+            warmups = []
+            if isinstance(embedder, BGEEmbedder):
+                warmups.append(BGEEmbedder._get_model())
+            warmups.append(BGEReranker._get_model())
+            await asyncio.gather(*warmups, return_exceptions=True)
+            logger.info("models_warmed", worker_id=worker_id)
+        except Exception as exc:
+            logger.warning("model_warm_failed", error=str(exc))
+
+    _TASKS.add(asyncio.create_task(_warm_models()))
 
     scheduler = RuleExtractorScheduler(
         session_factory=async_session_factory,
@@ -178,9 +237,10 @@ async def _main() -> None:
         await asyncio.gather(
             _poll_loop(worker_id),
             _reconcile_loop(),
+            return_exceptions=True,
         )
     finally:
-        scheduler.stop(wait=True)
+        scheduler.stop(wait=False)
 
     logger.info("worker_stopped", worker_id=worker_id)
 

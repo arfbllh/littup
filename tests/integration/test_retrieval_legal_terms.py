@@ -1,4 +1,4 @@
-"""BM25 retrieval integration tests — legal term ranking and NN-1 status filter."""
+"""BM25 retrieval integration tests — legal term ranking and status filter."""
 
 import uuid
 
@@ -137,7 +137,7 @@ async def test_bm25_excludes_non_ready_document_chunks(db_session):
 
     result_ids = [r[0] for r in results]
     assert ready_chunk_id in result_ids, "ready doc chunk must appear in results"
-    assert ocr_chunk_id not in result_ids, "ocr_running doc chunk must NOT appear in results (NN-1)"
+    assert ocr_chunk_id not in result_ids, "ocr_running doc chunk must NOT appear in results"
 
 
 @pytest.mark.asyncio

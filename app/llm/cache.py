@@ -41,7 +41,7 @@ def build_cache_key(
 
 
 class ResponseCache:
-    """Postgres-backed LLM response cache. Content-addressed (NN-7)."""
+    """Postgres-backed LLM response cache. Content-addressed."""
 
     def __init__(
         self,

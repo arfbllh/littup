@@ -1,7 +1,7 @@
-"""WS-F.3: per-draft fingerprint must fold in extra_instructions.
+"""Per-draft fingerprint must fold in extra_instructions.
 
 Two drafts with the same template but different operator prompts must NOT
-collide in the LLM cache (Inv #7) or the edit log (Inv #5).
+collide in the LLM cache or the edit log.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Stage-2 edit loop: offline rule extractor (M10).
+"""Stage-2 edit loop: offline rule extractor.
 
 Groups recent edits per template, asks the analysis-tier LLM for a generalizable
 rule, dedups against existing appended_rules, and (on novel rule) inserts a new

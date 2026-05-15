@@ -51,6 +51,16 @@ class DraftRepo:
             {"id": draft_id, "version": template_version, "fp": prompt_fingerprint},
         )
         if result.rowcount == 0:
+            # Disambiguate: row gone (deleted by user) vs. wrong status.
+            from app.core.errors import CancelledIngest
+            exists = await self._session.execute(
+                text("SELECT 1 FROM app.drafts WHERE id=:id"),
+                {"id": draft_id},
+            )
+            if exists.scalar_one_or_none() is None:
+                raise CancelledIngest(
+                    f"Draft {draft_id} was deleted before generation started"
+                )
             raise ConflictError(
                 f"Draft {draft_id} is not in 'queued' state", code="DRAFT_NOT_QUEUED"
             )

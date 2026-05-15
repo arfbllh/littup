@@ -117,7 +117,7 @@ async def test_edit_save_creates_rows_and_enqueues_jobs(
     assert "parties" in names
     assert "factual_background" in names
 
-    # NN-5: template_version and prompt_fingerprint must be copied from the draft
+    # template_version and prompt_fingerprint must be copied from the draft
     for row in rows:
         assert row[2] == version
         assert row[3] == fp

@@ -1,4 +1,4 @@
-"""APScheduler-based periodic rule extraction (M10).
+"""APScheduler-based periodic rule extraction.
 
 Runs only in the worker process. Uses AsyncIOScheduler from APScheduler 3.x.
 Advisory lock (via direct connection) prevents duplicate runs across workers.

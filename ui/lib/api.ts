@@ -14,6 +14,8 @@ import type {
   TemplateVersionsResponse,
   SectionView,
   EditMetricsResponse,
+  ReextractSessionView,
+  OcrProvider,
 } from './types';
 
 const API_BASE = '/api';
@@ -62,12 +64,74 @@ export async function getBlocks(docId: string): Promise<BlocksResponse> {
 
 export async function retryDocument(
   docId: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; provider?: 'pdfplumber' | 'paddleocr' | 'auto' } = {},
 ): Promise<DocumentStatus> {
-  const qs = options.force ? '?force=true' : '';
+  const params = new URLSearchParams();
+  if (options.force) params.set('force', 'true');
+  if (options.provider) params.set('provider', options.provider);
+  const qs = params.toString() ? `?${params.toString()}` : '';
   return apiFetch<DocumentStatus>(`${API_BASE}/documents/${docId}/retry${qs}`, {
     method: 'POST',
   });
+}
+
+export async function reextractPage(
+  docId: string,
+  pageNum: number,
+  provider: 'pdfplumber' | 'paddleocr',
+): Promise<DocumentStatus> {
+  const qs = `?provider=${encodeURIComponent(provider)}`;
+  return apiFetch<DocumentStatus>(
+    `${API_BASE}/documents/${docId}/pages/${pageNum}/reextract${qs}`,
+    { method: 'POST' },
+  );
+}
+
+export async function startReextractSession(
+  docId: string,
+  pages: number[],
+  provider: OcrProvider,
+): Promise<ReextractSessionView> {
+  return apiFetch<ReextractSessionView>(
+    `${API_BASE}/documents/${docId}/reextract-sessions`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ pages, provider }),
+    },
+  );
+}
+
+export async function getReextractSession(
+  docId: string,
+  sessionId: string,
+): Promise<ReextractSessionView> {
+  return apiFetch<ReextractSessionView>(
+    `${API_BASE}/documents/${docId}/reextract-sessions/${sessionId}`,
+  );
+}
+
+export async function acceptReextractSession(
+  docId: string,
+  sessionId: string,
+  acceptedPages?: number[],
+): Promise<ReextractSessionView> {
+  return apiFetch<ReextractSessionView>(
+    `${API_BASE}/documents/${docId}/reextract-sessions/${sessionId}/accept`,
+    {
+      method: 'POST',
+      body: JSON.stringify(acceptedPages ? { pages: acceptedPages } : {}),
+    },
+  );
+}
+
+export async function rejectReextractSession(
+  docId: string,
+  sessionId: string,
+): Promise<ReextractSessionView> {
+  return apiFetch<ReextractSessionView>(
+    `${API_BASE}/documents/${docId}/reextract-sessions/${sessionId}/reject`,
+    { method: 'POST' },
+  );
 }
 
 export async function deleteDocument(docId: string): Promise<void> {

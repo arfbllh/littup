@@ -1,5 +1,5 @@
 """Document event bus — increments app.documents.last_event_seq atomically
-with a row in app.document_events for SSE replay (NN-10)."""
+with a row in app.document_events for SSE replay."""
 
 from __future__ import annotations
 

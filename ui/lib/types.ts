@@ -8,6 +8,38 @@ export interface DocumentSummary {
   has_blocks?: boolean;
 }
 
+export type OcrProvider = 'pdfplumber' | 'paddleocr';
+
+export type ReextractSessionStatus =
+  | 'pending'
+  | 'running'
+  | 'ready'
+  | 'accepted'
+  | 'rejected'
+  | 'failed';
+
+export type ReextractPageStatus = 'pending' | 'ok' | 'failed';
+
+export interface ReextractPageView {
+  page_number: number;
+  page_id: string;
+  provider: OcrProvider;
+  old_text: string;
+  new_text: string;
+  status: ReextractPageStatus;
+  error_message?: string | null;
+}
+
+export interface ReextractSessionView {
+  session_id: string;
+  document_id: string;
+  provider: OcrProvider;
+  page_numbers: number[];
+  status: ReextractSessionStatus;
+  error_message?: string | null;
+  pages: ReextractPageView[];
+}
+
 export interface DocumentStatus extends DocumentSummary {
   sha256: string;
   mime_type: string | null;
@@ -15,6 +47,8 @@ export interface DocumentStatus extends DocumentSummary {
   error_code: string | null;
   error_message: string | null;
   updated_at: string;
+  ocr_provider_override?: OcrProvider | null;
+  ocr_provider_used?: OcrProvider | null;
 }
 
 export interface Block {

@@ -1,4 +1,4 @@
-"""Integration: NN-6 — VLM per-document cap is enforced atomically.
+"""Integration: VLM per-document cap is enforced atomically.
 
 With MAX_VLM_PAGES_PER_DOC=2 and a 3-page document where every page
 escalates to VLM, exactly 2 VLM calls happen.  The 3rd page lands with
@@ -57,7 +57,7 @@ async def test_vlm_cap_exactly_two_calls(
     cleanup_documents_and_jobs,
     monkeypatch,
 ):
-    """NN-6 acceptance test.
+    """Acceptance test.
 
     Setup:
     - PaddleOCR always returns confidence 0.2 (triggers VLM escalation)

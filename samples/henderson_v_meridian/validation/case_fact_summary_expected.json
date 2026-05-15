@@ -1,0 +1,175 @@
+{
+  "schema_version": "1.0",
+  "template_id": "case_fact_summary",
+  "case_name": "Henderson v. Meridian Insurance Group, Inc. et al.",
+  "case_no": "2025-L-004812",
+  "court": "Circuit Court of Cook County, Illinois — Law Division",
+  "description": "Ground truth for the case_fact_summary template applied to the Henderson v. Meridian sample.  All values are extracted directly from source_docs/.",
+  "expected_extraction": {
+    "parties": [
+      {
+        "name": "James Henderson",
+        "role": "Plaintiff"
+      },
+      {
+        "name": "Swift Logistics LLC",
+        "role": "Defendant"
+      },
+      {
+        "name": "Marcus Webb",
+        "role": "Defendant"
+      },
+      {
+        "name": "Meridian Insurance Group, Inc.",
+        "role": "Defendant"
+      }
+    ],
+    "jurisdiction": "Circuit Court of Cook County, Illinois — Law Division",
+    "filing_date": "2025-04-28",
+    "claims": [
+      "Negligence (Motor Vehicle) — Count I",
+      "Respondeat Superior — Count II",
+      "Negligent Entrustment — Count III",
+      "Insurance Bad Faith (215 ILCS 5/155) — Count IV"
+    ],
+    "damages_sought": "$2,450,034.62"
+  },
+  "expected_sections": {
+    "factual_background": {
+      "must_mention": [
+        "March 15, 2025",
+        "Interstate 90",
+        "milepost 142.3",
+        "Marcus Webb",
+        "Swift Logistics",
+        "herniated disc",
+        "L4-L5",
+        "mild traumatic brain injury",
+        "$87,534.62"
+      ],
+      "must_not_mention": [
+        "plaintiff's fault",
+        "contributory negligence established"
+      ]
+    },
+    "procedural_history": {
+      "must_mention": [
+        "April 28, 2025",
+        "2025-L-004812",
+        "Sandra K. Morrow",
+        "Fonseca"
+      ]
+    },
+    "key_issues": {
+      "must_mention": [
+        "distracted driving",
+        "respondeat superior",
+        "bad faith",
+        "625 ILCS",
+        "215 ILCS 5/155"
+      ]
+    }
+  },
+  "source_document_index": [
+    {
+      "filename": "01_complaint.pdf",
+      "type": "civil_complaint",
+      "filed": "2025-04-28",
+      "key_facts": [
+        "Lists all four parties with roles",
+        "States all four counts",
+        "States total damages of $2,450,034.62",
+        "Identifies court as Circuit Court of Cook County",
+        "Names presiding judge (Hon. Sandra K. Morrow)"
+      ]
+    },
+    {
+      "filename": "02_police_report.pdf",
+      "type": "law_enforcement_incident_report",
+      "report_no": "CCSO-2025-0315-4471",
+      "date": "2025-03-15",
+      "key_facts": [
+        "Webb admitted looking at navigation tablet at time of impact",
+        "Citation issued: 625 ILCS 5/11-601(a)",
+        "Henderson transported to Rush University Medical Center",
+        "Witness Maria Chen corroborated distracted driving"
+      ]
+    },
+    {
+      "filename": "03_medical_records.pdf",
+      "type": "medical_records",
+      "date_range": "2025-03-15 to 2025-04-28",
+      "key_facts": [
+        "Diagnosis: mTBI (S06.0X0A), L4-L5 herniation (M51.16), cervical strain grade III",
+        "Total billed: $87,534.62",
+        "No pre-existing L4-L5 pathology noted on MRI"
+      ]
+    },
+    {
+      "filename": "04_insurance_denial.pdf",
+      "type": "insurance_correspondence",
+      "date": "2025-04-14",
+      "key_facts": [
+        "Claim denied in full — Claim No. MIG-2025-IL-038841",
+        "Three stated denial grounds: contributory negligence, nav device, pre-existing",
+        "Policy No. CAP-IL-0072441 — $5M CSL limit"
+      ]
+    },
+    {
+      "filename": "witness_statement.txt",
+      "type": "witness_statement",
+      "date": "2025-03-15",
+      "key_facts": [
+        "Observed driver's head tilted downward toward center console before impact",
+        "Called 911 at 09:18 a.m."
+      ]
+    }
+  ],
+  "retrieval_smoke_tests": [
+    {
+      "query": "parties plaintiff defendant names",
+      "expect_chunks_containing": [
+        "James Henderson",
+        "Swift Logistics",
+        "Marcus Webb",
+        "Meridian"
+      ]
+    },
+    {
+      "query": "jurisdiction venue court district",
+      "expect_chunks_containing": [
+        "Circuit Court",
+        "Cook County",
+        "Illinois",
+        "Law Division"
+      ]
+    },
+    {
+      "query": "causes of action legal claims counts",
+      "expect_chunks_containing": [
+        "negligence",
+        "respondeat superior",
+        "bad faith",
+        "entrustment"
+      ]
+    },
+    {
+      "query": "damages relief requested monetary",
+      "expect_chunks_containing": [
+        "2,450",
+        "87,534",
+        "180,000",
+        "182,500"
+      ]
+    },
+    {
+      "query": "factual background facts allegations events",
+      "expect_chunks_containing": [
+        "March 15",
+        "I-90",
+        "navigation tablet",
+        "herniated disc"
+      ]
+    }
+  ]
+}

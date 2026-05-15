@@ -45,6 +45,13 @@ class IngestError(AppError):
         super().__init__(message, code=code, status_code=422, retryable=retryable)
 
 
+class CancelledIngest(AppError):
+    """Cooperative cancellation signal — not a failure."""
+
+    def __init__(self, message: str = "Job cancelled", *, code: str = "INGEST_CANCELLED"):
+        super().__init__(message, code=code, status_code=409, retryable=False)
+
+
 class RateLimitError(AppError):
     def __init__(self, message: str, *, code: str = "RATE_LIMITED", retry_after: int = 60):
         super().__init__(message, code=code, status_code=429)

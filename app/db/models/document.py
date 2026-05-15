@@ -26,6 +26,7 @@ class Document(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     vlm_pages_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    ocr_provider_override: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
     last_accessed_at: Mapped[datetime | None] = mapped_column(TZ, server_default=func.now())
@@ -64,6 +65,7 @@ class Page(Base):
     width: Mapped[float | None] = mapped_column(Float)
     height: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    ocr_provider_override: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
 
     document: Mapped["Document"] = relationship("Document", back_populates="pages")
@@ -119,3 +121,41 @@ class Span(Base):
 
     page: Mapped["Page"] = relationship("Page", back_populates="spans")
     block: Mapped["Block | None"] = relationship("Block", back_populates="spans")
+
+
+class ReextractSession(Base):
+    __tablename__ = "reextract_sessions"
+    __table_args__ = {"schema": "app"}
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, server_default=func.gen_random_uuid())
+    document_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("app.documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    page_numbers: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(TZ)
+
+
+class ReextractPageResult(Base):
+    __tablename__ = "reextract_page_results"
+    __table_args__ = {"schema": "app"}
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, server_default=func.gen_random_uuid())
+    session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("app.reextract_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("app.pages.id", ondelete="CASCADE"), nullable=False
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    old_text: Mapped[str] = mapped_column(Text, nullable=False)
+    new_text: Mapped[str] = mapped_column(Text, nullable=False)
+    new_spans: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())

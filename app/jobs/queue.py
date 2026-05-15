@@ -77,6 +77,7 @@ class JobQueue:
                     SELECT id FROM jobs.jobs
                     WHERE  status = 'pending'
                     AND    kind = ANY(:kinds)
+                    AND    cancel_requested = FALSE
                     ORDER  BY created_at
                     FOR UPDATE SKIP LOCKED
                     LIMIT  1
@@ -160,6 +161,102 @@ class JobQueue:
         if row:
             await self._write_history(job_id, row.kind, row.status, worker_id=row.worker_id, error=error_msg)
         logger.warning("job_failed", job_id=job_id, retryable=retryable, error=error_msg)
+
+    async def request_cancel_for_document(self, document_id: str) -> list[str]:
+        """Mark all open jobs for ``document_id`` as cancel_requested.
+
+        Targets pending and running jobs. Running OCR loops poll the flag
+        between pages and exit cleanly; pending jobs see the flag at claim
+        time. Returns the list of job IDs that were flagged so the caller
+        can wait for them to terminate before deleting downstream rows.
+        """
+        result = await self._session.execute(
+            text("""
+                UPDATE jobs.jobs
+                SET cancel_requested = TRUE, updated_at = NOW()
+                WHERE payload->>'document_id' = :document_id
+                  AND status IN ('pending', 'running')
+                  AND cancel_requested = FALSE
+                RETURNING id
+            """),
+            {"document_id": document_id},
+        )
+        rows = result.fetchall()
+        ids = [r.id for r in rows]
+        if ids:
+            logger.info("jobs_cancel_requested", document_id=document_id, job_ids=ids)
+        return ids
+
+    async def request_cancel_for_draft(self, draft_id: str) -> list[str]:
+        """Mark all open DRAFT_GENERATION jobs for ``draft_id`` as cancel_requested.
+
+        Pending jobs are flipped straight to ``cancelled`` (no worker has
+        claimed them yet). Running jobs are flagged so the handler's cancel
+        watcher can stop them at the next checkpoint. Returns the IDs that
+        were touched in either bucket.
+        """
+        cancelled = await self._session.execute(
+            text("""
+                UPDATE jobs.jobs
+                SET status = 'cancelled', updated_at = NOW()
+                WHERE payload->>'draft_id' = :draft_id
+                  AND kind = 'draft_generation'
+                  AND status = 'pending'
+                RETURNING id
+            """),
+            {"draft_id": draft_id},
+        )
+        cancelled_ids = [r.id for r in cancelled.fetchall()]
+        for jid in cancelled_ids:
+            await self._write_history(jid, "draft_generation", "cancelled")
+
+        flagged = await self._session.execute(
+            text("""
+                UPDATE jobs.jobs
+                SET cancel_requested = TRUE, updated_at = NOW()
+                WHERE payload->>'draft_id' = :draft_id
+                  AND kind = 'draft_generation'
+                  AND status = 'running'
+                  AND cancel_requested = FALSE
+                RETURNING id
+            """),
+            {"draft_id": draft_id},
+        )
+        flagged_ids = [r.id for r in flagged.fetchall()]
+        ids = cancelled_ids + flagged_ids
+        if ids:
+            logger.info(
+                "draft_cancel_requested",
+                draft_id=draft_id,
+                cancelled=cancelled_ids,
+                flagged=flagged_ids,
+            )
+        return ids
+
+    async def is_cancel_requested(self, job_id: str) -> bool:
+        """Cheap point-check used by long-running handlers between iterations."""
+        result = await self._session.execute(
+            text("SELECT cancel_requested FROM jobs.jobs WHERE id = :id"),
+            {"id": job_id},
+        )
+        row = result.fetchone()
+        return bool(row and row.cancel_requested)
+
+    async def cancel(self, job_id: str) -> None:
+        """Mark a job as cancelled (terminal, non-retryable)."""
+        result = await self._session.execute(
+            text("""
+                UPDATE jobs.jobs
+                SET status = 'cancelled', updated_at = NOW()
+                WHERE id = :id AND status IN ('pending', 'running')
+                RETURNING kind, worker_id
+            """),
+            {"id": job_id},
+        )
+        row = result.fetchone()
+        if row:
+            await self._write_history(job_id, row.kind, "cancelled", worker_id=row.worker_id)
+            logger.info("job_cancelled", job_id=job_id)
 
     async def reclaim_stuck(self, timeout_seconds: int = 120) -> int:
         result = await self._session.execute(

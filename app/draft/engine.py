@@ -32,12 +32,12 @@ def _gnd(r: ValidationReport) -> float:
 
 
 def _compose_fingerprint(template_fp: str, extra_instructions: str | None) -> str:
-    """Per-draft fingerprint (WS-F.3, option b).
+    """Per-draft fingerprint.
 
     Falls back to ``template_fp`` when no custom prompt is set so existing
     drafts and template-keyed lookups remain stable. When a custom prompt is
     present, fold it into the hash so two drafts with different prompts get
-    different cache keys (Inv #7) and edit-store identity (Inv #5).
+    different cache keys and edit-store identity.
     """
     if not extra_instructions:
         return template_fp
@@ -108,7 +108,7 @@ class DraftEngine:
             retrieved = await self._retriever.multi_retrieve(
                 all_queries,
                 document_ids,
-                top_k_per_query=5,
+                top_k_per_query=8,
             )
 
             # Open a dedicated session for the generation phase so extractor/generator
@@ -296,7 +296,7 @@ class DraftEngine:
         retrieved = await self._retriever.multi_retrieve(
             {section_spec.retrieval_key: retrieval_query},
             list(draft.document_ids or []),
-            top_k_per_query=5,
+            top_k_per_query=8,
         )
 
         fields: dict = {}

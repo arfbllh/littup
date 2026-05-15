@@ -1,4 +1,4 @@
-"""NN-3: upload backpressure when the job queue is saturated."""
+"""Upload backpressure when the job queue is saturated."""
 
 import uuid
 

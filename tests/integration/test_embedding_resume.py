@@ -1,4 +1,4 @@
-"""Integration: embedding resume after simulated mid-document crash (NN-1).
+"""Integration: embedding resume after simulated mid-document crash.
 
 Verifies:
 1. _claim_embedding_running accepts status='embedding_running' (crash resume fix)
@@ -80,7 +80,7 @@ async def test_embedding_resume_after_partial_crash(
     )
     assert before_q.scalar_one() == 1, "Only the first chunk should be embedded before resume"
 
-    # Resume — must NOT skip (NN-1 fix: claim accepts embedding_running)
+    # Resume — must NOT skip (claim accepts embedding_running)
     result = await service.embed_chunks(doc_id, StubEmbedder())
     assert result.get("skipped") is not True, (
         "embed_chunks must not skip an embedding_running document"

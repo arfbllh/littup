@@ -33,10 +33,17 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
-    VLLM_BASE_URL: str = "http://vllm:8001/v1"
+    # Ollama daemon root (no /v1 suffix). When this env var is absent from the
+    # environment, ollama-typed providers are skipped entirely and the router
+    # falls straight to the next provider in each tier (typically Anthropic).
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
     LLM_HOURLY_BUDGET_USD: float = 5.00
     MAX_VLM_PAGES_PER_DOC: int = 20
     ROUTER_CONFIG_PATH: str = "config/router.yaml"
+    # Debug: when True, structlog-dump every outbound LLM request (messages,
+    # schema) and the response text. Off by default — payloads can be large.
+    LLM_LOG_PROMPTS: bool = False
+    LLM_LOG_PROMPTS_MAX_CHARS: int = 4000
 
     # Embeddings
     EMBEDDING_MODEL: str = "BAAI/bge-large-en-v1.5"
@@ -44,7 +51,7 @@ class Settings(BaseSettings):
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
     EMBEDDER_PROVIDER: str = "bge"   # "bge" | "openai"
     HF_TOKEN: str = ""               # picked up by huggingface_hub via os.environ
-    TORCH_DEVICE: str = "cpu"        # "cpu" | "mps" | "cuda" — MPS on M1 hits a 9GB pool cap
+    TORCH_DEVICE: str = "cpu"        # "cpu" | "mps" | "cuda" — MPS on Apple Silicon hits a 9GB pool cap
 
     # Ingestion 
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
@@ -67,6 +74,9 @@ class Settings(BaseSettings):
     OCR_USE_GPU: bool = False
     OCR_PAGE_WORKERS: int = 4       # thread-pool size for per-page OCR
     OCR_RASTER_DPI: int = 300       # dpi used when rasterising PDF pages for OCR
+    OCR_MAX_IMAGE_SIDE: int = 4000  # cap longest side before passing to PaddleOCR (saves RAM, matches det max_side_limit)
+    OCR_FORCE_RASTER: bool = False  # if True, ignore native text layer and rasterise+OCR every PDF
+    OCR_PREPROCESS_ALL: bool = False  # if True, run deskew+denoise+binarize on every scan page, not just classifier-flagged degraded ones
 
     # Draft Engine
     TEMPLATES_DIR: str = "config/templates"
@@ -76,13 +86,13 @@ class Settings(BaseSettings):
     DRAFT_REGENERATE_TIMEOUT_S: int = 30
     WORKER_DRAFT_CONCURRENCY: int = 2
 
-    # Edit Capture + Few-shot Store (M9)
+    # Edit Capture + Few-shot Store
     WORKER_CONCURRENCY_FEW_SHOT: int = 4
     FEW_SHOT_TOP_K: int = 3
     FEW_SHOT_INDEX_MAX_ATTEMPTS: int = 5
     EDIT_METRICS_DEFAULT_DAYS: int = 30
 
-    # Rule Extractor (M10)
+    # Rule Extractor
     RULE_EXTRACTOR_INTERVAL_HOURS: int = 6
     RULE_EXTRACTOR_MIN_EDITS: int = 3
     RULE_EXTRACTOR_SIMILARITY_THRESHOLD: float = 0.88
